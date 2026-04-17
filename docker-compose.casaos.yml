@@ -1,0 +1,102 @@
+name: telegram-cloud-storage
+
+services:
+  bot-api:
+    image: aiogram/telegram-bot-api:latest
+    container_name: telegram-bot-api
+    hostname: telegram-bot-api
+    restart: unless-stopped
+    environment:
+      - TELEGRAM_BOT_TOKEN=PUT_YOUR_BOT_TOKEN_HERE
+      - TELEGRAM_API_ID=PUT_YOUR_API_ID_HERE
+      - TELEGRAM_API_HASH=PUT_YOUR_API_HASH_HERE
+      - TELEGRAM_LOCAL=1
+    volumes:
+      - type: bind
+        source: /DATA/AppData/telegram-cloud-storage/bot-api-data
+        target: /var/lib/telegram-bot-api
+        bind:
+          create_host_path: true
+    expose:
+      - "8081"
+    networks:
+      - telegram_network
+    privileged: false
+    cpu_shares: 90
+    deploy:
+      resources:
+        limits:
+          memory: 1024M
+    labels:
+      icon: https://telegram.org/img/t_logo.png
+
+  app:
+    image: patcoder97/telegram-cloud-storage:latest
+    container_name: telegram-cloud-storage
+    hostname: telegram-cloud-storage
+    restart: unless-stopped
+    depends_on:
+      bot-api:
+        condition: service_started
+        required: true
+    environment:
+      - DATA_DIR=/app/data
+      - TELEGRAM_BOT_TOKEN=PUT_YOUR_BOT_TOKEN_HERE
+      - TELEGRAM_CHAT_ID=PUT_YOUR_CHAT_ID_HERE
+    ports:
+      - mode: ingress
+        target: 5010
+        published: "5010"
+        protocol: tcp
+    volumes:
+      - type: bind
+        source: /DATA/AppData/telegram-cloud-storage/app-data
+        target: /app/data
+        bind:
+          create_host_path: true
+      - type: bind
+        source: /DATA/AppData/telegram-cloud-storage/bot-api-data
+        target: /var/lib/telegram-bot-api
+        bind:
+          create_host_path: true
+    devices: []
+    cap_add: []
+    networks:
+      - telegram_network
+    privileged: false
+    cpu_shares: 90
+    deploy:
+      resources:
+        limits:
+          memory: 1024M
+    labels:
+      icon: https://telegram.org/img/t_logo.png
+
+networks:
+  telegram_network:
+    name: telegram_network
+    driver: bridge
+
+x-casaos:
+  architectures:
+    - amd64
+    - arm64
+  author: PATCoder97
+  category: Utilities
+  description:
+    en_us: Store and download files through Telegram with a self-hosted local Bot API service.
+  developer: PATCoder97
+  hostname: ""
+  icon: https://telegram.org/img/t_logo.png
+  index: /
+  is_uncontrolled: false
+  main: app
+  port_map: "5010"
+  scheme: http
+  store_app_id: telegram-cloud-storage
+  tagline:
+    en_us: Personal Telegram-based cloud storage
+  thumbnail: ""
+  title:
+    custom: Telegram Cloud Storage
+    en_us: Telegram Cloud Storage

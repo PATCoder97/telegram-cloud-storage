@@ -14,9 +14,14 @@ from werkzeug.security import generate_password_hash, check_password_hash
 import threading
 import uuid
 import re
+import traceback
 
 app = Flask(__name__)
 app.secret_key = os.urandom(16)
+
+
+def log_message(message):
+    print(message, flush=True)
 
 # All persistent data stored under /app/data (mapped to host via volume)
 DATA_DIR = os.environ.get('DATA_DIR', 'data')
@@ -88,6 +93,7 @@ def init_db():
                       folder_id INTEGER,
                       owner_id INTEGER,
                       status TEXT DEFAULT 'Ready',
+                      error_message TEXT,
                       job_id TEXT,
                       public_token TEXT,
                       FOREIGN KEY(folder_id) REFERENCES folders(id),
@@ -97,7 +103,8 @@ def init_db():
     cursor.execute("PRAGMA table_info(files)")
     columns = [col[1] for col in cursor.fetchall()]
     for col, default in [('message_ids', 'TEXT'), ('folder_id', 'INTEGER'), ('owner_id', 'INTEGER'),
-                         ('status', "TEXT DEFAULT 'Ready'"), ('job_id', 'TEXT'), ('public_token', 'TEXT')]:
+                         ('status', "TEXT DEFAULT 'Ready'"), ('error_message', 'TEXT'),
+                         ('job_id', 'TEXT'), ('public_token', 'TEXT')]:
         if col not in columns:
             cursor.execute(f"ALTER TABLE files ADD COLUMN {col} {default}")
 
@@ -223,19 +230,19 @@ def fetch_directory_contents(folder_id):
     cursor.execute("SELECT id, name FROM folders WHERE parent_id IS ? AND owner_id = ?", (folder_id, current_user.id))
     folders_info = [{"id": r[0], "name": r[1]} for r in cursor.fetchall()]
 
-    cursor.execute("SELECT id, file_name, file_size, chunk_list, status, job_id, public_token FROM files WHERE folder_id IS ? AND owner_id = ?",
+    cursor.execute("SELECT id, file_name, file_size, chunk_list, status, error_message, job_id, public_token FROM files WHERE folder_id IS ? AND owner_id = ?",
                    (folder_id, current_user.id))
     results = cursor.fetchall()
 
     files_info = []
     for result in results:
-        f_id, f_name, f_size, f_list, f_status, f_job_id, pub_token = result
+        f_id, f_name, f_size, f_list, f_status, f_error_message, f_job_id, pub_token = result
         chunk_amount = len(f_list.split(', ')) if f_list else 0
         formatted_size = convert_bytes(f_size)
         files_info.append({
             'id': f_id, 'file_name': f_name, 'formatted_size': formatted_size,
             'chunk_amount': chunk_amount, 'status': f_status, 'job_id': f_job_id,
-            'public_token': pub_token
+            'public_token': pub_token, 'error_message': f_error_message
         })
 
     current_folder_name = "Home"
@@ -543,7 +550,7 @@ def send_file_to_telegram(file_content, filename):
     url = f"http://bot-api:8081/bot{TELEGRAM_BOT_TOKEN}/sendDocument"
     files = {'document': (filename, file_content)}
     data = {'chat_id': TELEGRAM_CHAT_ID}
-    response = http_requests.post(url, files=files, data=data)
+    response = http_requests.post(url, files=files, data=data, timeout=120)
     return response
 
 
@@ -566,14 +573,14 @@ def upload_chunk(chunk_path, file_id=None, max_retries=5):
         except Exception as e:
             if is_stopped(file_id):
                 return None
-            print(f"Error uploading: {e}, retrying...")
+            log_message(f"Error uploading {filename}: {e}, retrying...")
             retry_count += 1
             time.sleep(1)
     return None
 
 
 def upload_to_telegram(output_directory, file_id=None):
-    print(f"Uploading chunks to Telegram...")
+    log_message("Uploading chunks to Telegram...")
     filenames = os.listdir(output_directory)
     chunk_files = [f for f in filenames if f.endswith('.enc')]
     sorted_filenames = sorted(chunk_files, key=numerical_sort_key)
@@ -606,7 +613,7 @@ def upload_to_telegram(output_directory, file_id=None):
         stop_signal_detected = False
         for future in concurrent.futures.as_completed(future_to_index):
             if not stop_signal_detected and is_stopped(file_id):
-                print(f"Stop signal detected for file {file_id}.")
+                log_message(f"Stop signal detected for file {file_id}.")
                 stop_signal_detected = True
                 for f in future_to_index:
                     f.cancel()
@@ -620,7 +627,7 @@ def upload_to_telegram(output_directory, file_id=None):
                         update_progressive_status(file_id, chunk_results)
             except Exception as exc:
                 if not stop_signal_detected:
-                    print(f'Chunk {index + 1} error: {exc}')
+                    log_message(f'Chunk {index + 1} error: {exc}')
 
         if stop_signal_detected:
             return None, None
@@ -651,12 +658,12 @@ def update_progressive_status(file_id, chunk_results):
         conn.commit()
         conn.close()
     except Exception as e:
-        print(f"Failed to update status for file {file_id}: {e}")
+        log_message(f"Failed to update status for file {file_id}: {e}")
 
 
 def process_file_background(file_id, file_path, folder_id, user_id, job_id=None):
     try:
-        print(f"Starting background processing for file ID {file_id}")
+        log_message(f"Starting background processing for file ID {file_id}")
         if not job_id:
             job_id = str(uuid.uuid4())
 
@@ -686,7 +693,7 @@ def process_file_background(file_id, file_path, folder_id, user_id, job_id=None)
             key_hex = key.hex()
             conn = sqlite3.connect(DATABASE_FILE)
             cursor = conn.cursor()
-            cursor.execute("UPDATE files SET key_hex = ? WHERE id = ?", (key_hex, file_id))
+            cursor.execute("UPDATE files SET key_hex = ?, error_message = NULL WHERE id = ?", (key_hex, file_id))
             conn.commit()
             conn.close()
 
@@ -698,28 +705,30 @@ def process_file_background(file_id, file_path, folder_id, user_id, job_id=None)
 
         conn = sqlite3.connect(DATABASE_FILE)
         cursor = conn.cursor()
-        cursor.execute("UPDATE files SET status = 'Ready' WHERE id = ?", (file_id,))
+        cursor.execute("UPDATE files SET status = 'Ready', error_message = NULL WHERE id = ?", (file_id,))
         conn.commit()
         conn.close()
 
         shutil.rmtree(job_dir, ignore_errors=True)
         shutil.rmtree(chunks_dir, ignore_errors=True)
-        print(f"Background processing completed for file ID {file_id}")
+        log_message(f"Background processing completed for file ID {file_id}")
 
     except Exception as e:
         if is_stopped(file_id):
-            print(f"File {file_id} stopped.")
+            log_message(f"File {file_id} stopped.")
             conn = sqlite3.connect(DATABASE_FILE)
             cursor = conn.cursor()
-            cursor.execute("UPDATE files SET status = 'Stopped' WHERE id = ?", (file_id,))
+            cursor.execute("UPDATE files SET status = 'Stopped', error_message = NULL WHERE id = ?", (file_id,))
             conn.commit()
             conn.close()
             return
-        print(f"Error processing file {file_id}: {e}")
+        error_text = str(e)[:1000]
+        log_message(f"Error processing file {file_id}: {error_text}")
+        log_message(traceback.format_exc())
         try:
             conn = sqlite3.connect(DATABASE_FILE)
             cursor = conn.cursor()
-            cursor.execute("UPDATE files SET status = 'Error' WHERE id = ?", (file_id,))
+            cursor.execute("UPDATE files SET status = 'Error', error_message = ? WHERE id = ?", (error_text, file_id))
             conn.commit()
             conn.close()
         except:
@@ -745,7 +754,7 @@ def fetch_telegram_url(telegram_file_id, max_retries=3):
                 return None
             elif response.status_code == 429:
                 retry_after = response.json().get('parameters', {}).get('retry_after', 1)
-                print(f"Rate limited. Retrying after {retry_after}s...")
+                log_message(f"Rate limited. Retrying after {retry_after}s...")
                 time.sleep(retry_after)
                 retry_count += 1
                 continue
@@ -753,7 +762,7 @@ def fetch_telegram_url(telegram_file_id, max_retries=3):
                 retry_count += 1
                 time.sleep(1)
         except Exception as e:
-            print(f"Error fetching URL for {telegram_file_id}: {e}")
+            log_message(f"Error fetching URL for {telegram_file_id}: {e}")
             retry_count += 1
             time.sleep(1)
     return None
@@ -771,7 +780,7 @@ def get_fresh_telegram_urls(telegram_file_ids):
                 if url:
                     refreshed_urls[index] = url
             except Exception as e:
-                print(f"Error refreshing index {index}: {e}")
+                log_message(f"Error refreshing index {index}: {e}")
     return refreshed_urls
 
 
@@ -780,12 +789,12 @@ def process_download(file_name, chunks_urls, message_ids, key_hex, file_id=None)
     os.makedirs(TEMP_DOWNLOAD, exist_ok=True)
 
     if chunks_urls and len(chunks_urls) > 0:
-        print(f"Fetching {len(chunks_urls)} fresh Telegram paths for {file_name}...")
+        log_message(f"Fetching {len(chunks_urls)} fresh Telegram paths for {file_name}...")
         refreshed_urls = get_fresh_telegram_urls(chunks_urls)
         if refreshed_urls and None not in refreshed_urls:
             local_chunk_paths = refreshed_urls
         else:
-            print("Failed to resolve dynamic telegram links.")
+            log_message("Failed to resolve dynamic telegram links.")
             return "Failed to resolve file paths from Telegram API", 404
 
     try:
@@ -802,7 +811,7 @@ def process_download(file_name, chunks_urls, message_ids, key_hex, file_id=None)
         return send_file(decrypted_file_path, as_attachment=True)
 
     except Exception as e:
-        print(f"Decryption error: {e}")
+        log_message(f"Decryption error: {e}")
         shutil.rmtree(TEMP_DOWNLOAD, ignore_errors=True)
         os.makedirs(TEMP_DOWNLOAD, exist_ok=True)
         return "Decryption failed", 500
@@ -893,7 +902,7 @@ def delete_file_entry(file_id):
                     url = f"http://bot-api:8081/bot{TELEGRAM_BOT_TOKEN}/deleteMessage"
                     http_requests.post(url, json={'chat_id': TELEGRAM_CHAT_ID, 'message_id': msg_id})
             except Exception as e:
-                print(f"Failed to delete message {msg_id}: {e}")
+                log_message(f"Failed to delete message {msg_id}: {e}")
     cursor.execute("DELETE FROM files WHERE id=?", (file_id,))
     conn.commit()
     conn.close()
