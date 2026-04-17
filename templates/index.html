@@ -1,0 +1,353 @@
+{% extends "base.html" %}
+
+{% block title %}My Files - Telegram Cloud Storage{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb mb-0 bg-transparent p-0 fs-5 fw-bold">
+            <li class="breadcrumb-item"><a href="{{ url_for('index') }}" class="text-white text-decoration-none"><i class="fas fa-home me-2 text-primary"></i>Home</a></li>
+            {% if current_folder_id %}
+            <li class="breadcrumb-item active text-white pe-none" aria-current="page"><span class="badge bg-white bg-opacity-25 ms-1">{{ current_folder_name }}</span></li>
+            {% endif %}
+        </ol>
+    </nav>
+    <div class="btn-group gap-2">
+        <button type="button" class="btn glass-btn fw-bold px-3" data-bs-toggle="modal" data-bs-target="#createFolderModal">
+            <i class="fas fa-folder-plus text-warning me-1"></i> New Folder
+        </button>
+        <button type="button" class="btn btn-primary fw-bold px-4" onclick="document.getElementById('fileInput').click()">
+            <i class="fas fa-cloud-upload-alt me-1"></i> Upload
+        </button>
+    </div>
+</div>
+
+<div class="glass-morphism p-4 drop-zone" id="dropZone">
+    <input type="file" id="fileInput" style="display: none" onchange="handleFiles(this.files)" multiple>
+
+    <div class="row row-cols-2 row-cols-md-4 row-cols-lg-5 g-4 mt-1">
+        <!-- Parent Directory -->
+        {% if parent_folder_id is not none or current_folder_id %}
+        <div class="col">
+            <a href="{{ url_for('index', folder_id=parent_folder_id) if parent_folder_id else url_for('index') }}" class="text-decoration-none">
+                <div class="file-card text-center p-4">
+                    <div class="mb-3">
+                        <i class="fas fa-level-up-alt fa-3x text-white-50"></i>
+                    </div>
+                    <p class="text-white mb-0 fw-bold">Go Back</p>
+                </div>
+            </a>
+        </div>
+        {% endif %}
+
+        <!-- Folders -->
+        {% for folder in folders_info %}
+        <div class="col">
+            <div class="file-card text-center p-4">
+                <a href="{{ url_for('index', folder_id=folder.id) }}" class="text-decoration-none">
+                    <div class="mb-3 position-relative">
+                        <i class="fas fa-folder fa-4x text-warning" style="filter: drop-shadow(0 4px 6px rgba(245,158,11,0.4));"></i>
+                    </div>
+                    <p class="text-white mb-0 text-truncate fw-bold">{{ folder.name }}</p>
+                </a>
+                <div class="file-actions position-absolute top-0 end-0 p-2">
+                    <button class="btn btn-sm btn-dark text-white rounded-circle p-2 mx-1 shadow-sm" onclick="event.preventDefault(); openRenameModal('{{ folder.id }}', '{{ folder.name }}')" title="Rename"><i class="fas fa-pen fa-xs"></i></button>
+                    <a href="{{ url_for('delete_folder', folder_id=folder.id) }}" class="btn btn-sm btn-danger rounded-circle p-2 shadow-sm" onclick="return confirm('Delete this folder and move contents to root?')" title="Delete"><i class="fas fa-trash fa-xs"></i></a>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+
+        <!-- Files -->
+        {% for file in files_info %}
+        <div class="col">
+            <div class="file-card text-center p-4 position-relative">
+                <div class="mb-3">
+                {% if file.status == 'Processing' %}
+                    <i class="fas fa-circle-notch fa-spin fa-4x text-primary" style="filter: drop-shadow(0 0 10px rgba(99,102,241,0.6));"></i>
+                {% elif file.status == 'Error' %}
+                    <i class="fas fa-exclamation-circle fa-4x text-danger" style="filter: drop-shadow(0 0 10px rgba(220,53,69,0.5));"></i>
+                {% elif file.status == 'Stopped' %}
+                    <i class="fas fa-pause-circle fa-4x text-secondary"></i>
+                {% else %}
+                    {% set ext = file.file_name.split('.')[-1].lower() if '.' in file.file_name else '' %}
+                    {% if ext in ['jpg', 'jpeg', 'png', 'gif'] %}
+                        <i class="fas fa-file-image fa-4x text-success" style="filter: drop-shadow(0 4px 8px rgba(25,135,84,0.3));"></i>
+                    {% elif ext in ['mp4', 'mkv', 'avi'] %}
+                        <i class="fas fa-file-video fa-4x text-info" style="filter: drop-shadow(0 4px 8px rgba(13,202,240,0.3));"></i>
+                    {% elif ext in ['zip', 'rar', '7z'] %}
+                        <i class="fas fa-file-archive fa-4x text-warning" style="filter: drop-shadow(0 4px 8px rgba(255,193,7,0.3));"></i>
+                    {% else %}
+                        <i class="fas fa-file fa-4x text-primary" style="filter: drop-shadow(0 4px 8px rgba(13,110,253,0.3));"></i>
+                    {% endif %}
+                {% endif %}
+                </div>
+                
+                <h6 class="text-white mb-1 text-truncate" title="{{ file.file_name }}">{{ file.file_name }}</h6>
+                
+                {% if file.status == 'Processing' %}
+                    <small class="badge bg-primary bg-opacity-25 text-primary rounded-pill">Processing...</small>
+                {% elif file.status == 'Error' %}
+                    <small class="badge bg-danger bg-opacity-25 text-danger rounded-pill">Upload Error</small>
+                {% elif file.status == 'Stopped' %}
+                    <small class="badge bg-secondary bg-opacity-25 text-secondary rounded-pill">Stopped</small>
+                {% else %}
+                    <small class="text-white-50 fw-semibold">{{ file.formatted_size }}</small>
+                {% endif %}
+
+                <div class="file-actions position-absolute top-0 start-0 w-100 h-100 d-flex flex-column align-items-center justify-content-center" style="background: rgba(15,23,42,0.85); backdrop-filter: blur(4px); border-radius: 15px; border: 1px solid rgba(255,255,255,0.1);">
+                    <div class="d-flex flex-wrap justify-content-center gap-2 p-2">
+                    {% if file.status == 'Processing' %}
+                        <a href="{{ url_for('stop_upload', file_id=file.id) }}" class="btn btn-sm btn-danger glass-btn rounded-pill w-75"><i class="fas fa-stop me-1"></i> Stop</a>
+                    {% elif file.status == 'Ready' or not file.status %}
+                        <a href="{{ url_for('download_and_decrypt', file_id=file.id) }}" class="btn btn-sm btn-light rounded-circle p-2 shadow-sm" title="Download"><i class="fas fa-download mx-1"></i></a>
+                        {% if file.public_token %}
+                        <button class="btn btn-sm btn-success rounded-circle p-2 shadow-sm" onclick="openPublicLinkModal('{{ file.id }}', '{{ file.file_name }}', '{{ url_for('public_download', token=file.public_token, _external=True) }}')" title="Public Link Active"><i class="fas fa-link mx-1"></i></button>
+                        {% else %}
+                        <button class="btn btn-sm btn-outline-light rounded-circle p-2 shadow-sm" onclick="openPublicLinkModal('{{ file.id }}', '{{ file.file_name }}', '')" title="Create Public Link"><i class="fas fa-globe mx-1"></i></button>
+                        {% endif %}
+                        <button class="btn btn-sm btn-info rounded-circle p-2 shadow-sm" onclick="openMoveModal('{{ file.id }}', '{{ file.file_name }}')" title="Move"><i class="fas fa-file-export mx-1 text-white"></i></button>
+                        <a href="{{ url_for('delete_file_entry', file_id=file.id) }}" class="btn btn-sm btn-danger rounded-circle p-2 shadow-sm" title="Delete"><i class="fas fa-trash mx-1"></i></a>
+                    {% elif file.status == 'Error' or file.status == 'Stopped' %}
+                        <a href="{{ url_for('retry_file', file_id=file.id) }}" class="btn btn-sm btn-warning rounded-circle p-2 shadow-sm text-dark" title="Retry"><i class="fas fa-redo mx-1"></i></a>
+                        <a href="{{ url_for('delete_file_entry', file_id=file.id) }}" class="btn btn-sm btn-danger rounded-circle p-2 shadow-sm" title="Delete"><i class="fas fa-trash mx-1"></i></a>
+                    {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <!-- Empty State -->
+    {% if not files_info and not folders_info and not current_folder_id %}
+    <div class="text-center py-5">
+        <div class="d-inline-block p-4 rounded-circle mb-3" style="background: rgba(255,255,255,0.05);">
+            <i class="fas fa-cloud-upload-alt fa-5x text-white-50"></i>
+        </div>
+        <h4 class="text-white fw-bold">No files yet</h4>
+        <p class="text-white-50 mb-0">Drag and drop files here or use the Upload button</p>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Upload Progress Bar -->
+<div id="uploadProgressContainer" class="mt-4 glass-morphism p-4" style="display: none; border-left: 4px solid var(--accent-color);">
+    <div class="d-flex justify-content-between mb-2">
+        <h6 class="text-white fw-bold mb-0" id="uploadStatusText">Preparing Upload...</h6>
+        <span class="text-white-50 fw-bold" id="uploadPercentage">0%</span>
+    </div>
+    <div class="progress" style="height: 12px; background: rgba(0,0,0,0.3); border-radius: 10px;">
+        <div id="uploadProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-primary" role="progressbar" style="width: 0%"></div>
+    </div>
+    <div id="uploadStatus" class="text-white-50 mt-2 small fw-semibold">Connecting to server...</div>
+</div>
+
+<!-- Modals -->
+{% include "_modals.html" ignore missing %}
+
+<!-- Create Folder Modal Inline (To replace ignore missing if not extracting) -->
+<div class="modal fade" id="createFolderModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content glass-morphism border-0 shadow-lg" style="box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5) !important;">
+            <div class="modal-header border-0 pb-0">
+                <h5 class="modal-title text-white fw-bold"><i class="fas fa-folder-plus text-warning me-2"></i>New Folder</h5>
+                <button type="button" class="btn-close btn-close-white opacity-50" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <form action="{{ url_for('create_folder') }}" method="post">
+                <div class="modal-body py-4">
+                    <input type="hidden" name="parent_id" value="{{ current_folder_id }}">
+                    <label class="form-label text-white-50 small text-uppercase fw-bold">Folder Name</label>
+                    <input type="text" name="name" class="form-control glass-input p-3" placeholder="e.g. Work Documents" required autofocus>
+                </div>
+                <div class="modal-footer border-0 pt-0">
+                    <button type="button" class="btn btn-link text-white-50 text-decoration-none fw-bold" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary px-4 fw-bold rounded-pill shadow">Create Folder</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Rename Modal -->
+<div class="modal fade" id="renameFolderModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content glass-morphism border-0 shadow-lg">
+            <div class="modal-header border-0 pb-0">
+                <h5 class="modal-title text-white fw-bold"><i class="fas fa-pen text-info me-2"></i>Rename Folder</h5>
+                <button type="button" class="btn-close btn-close-white opacity-50" data-bs-dismiss="modal"></button>
+            </div>
+            <form action="{{ url_for('rename_folder') }}" method="post">
+                <div class="modal-body py-4">
+                    <input type="hidden" name="folder_id" id="renameFolderId">
+                    <label class="form-label text-white-50 small text-uppercase fw-bold">New Name</label>
+                    <input type="text" name="name" id="renameFolderNameInput" class="form-control glass-input p-3" required>
+                </div>
+                <div class="modal-footer border-0 pt-0">
+                    <button type="button" class="btn btn-link text-white-50 text-decoration-none fw-bold" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-info px-4 fw-bold rounded-pill text-white shadow">Save Changes</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Public Link Modal -->
+<div class="modal fade" id="publicLinkModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content glass-morphism border-0 shadow-lg" style="box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5) !important;">
+             <div class="modal-header border-0 pb-0">
+                <h5 class="modal-title text-white fw-bold"><i class="fas fa-link text-primary me-2"></i>Public Link</h5>
+                <button type="button" class="btn-close btn-close-white opacity-50" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body py-4">
+                <p class="text-white mb-3 bg-dark bg-opacity-25 p-2 rounded-3 border border-secondary border-opacity-25"><small>File: <strong id="publicFileName"></strong></small></p>
+                
+                <div id="publicLinkActiveArea" style="display: none;">
+                    <label class="form-label text-white-50 small text-uppercase fw-bold">Public URL</label>
+                    <div class="input-group mb-4">
+                        <input type="text" id="publicLinkUrl" class="form-control glass-input p-3" readonly>
+                        <button type="button" class="btn btn-primary px-4 fw-bold shadow" onclick="copyPublicLink()"><i class="fas fa-copy"></i></button>
+                    </div>
+                    <form action="" id="revokeLinkForm" method="post" class="text-end">
+                        <button type="submit" class="btn btn-outline-danger fw-bold rounded-pill shadow-sm"><i class="fas fa-ban me-1"></i> Revoke Link</button>
+                    </form>
+                </div>
+
+                <div id="publicLinkInactiveArea" class="text-center py-3">
+                    <p class="text-white-50 mb-4">This file is private. Generate a public link to share it with anyone without requiring them to log in.</p>
+                    <form action="" id="generateLinkForm" method="post">
+                        <button type="submit" class="btn btn-success px-4 fw-bold rounded-pill shadow"><i class="fas fa-globe me-2"></i>Generate Public Link</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Move Modal -->
+<div class="modal fade" id="moveFileModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content glass-morphism border-0 shadow-lg">
+             <div class="modal-header border-0 pb-0">
+                <h5 class="modal-title text-white fw-bold"><i class="fas fa-exchange-alt text-secondary me-2"></i>Move File</h5>
+                <button type="button" class="btn-close btn-close-white opacity-50" data-bs-dismiss="modal"></button>
+            </div>
+            <form action="{{ url_for('move_file') }}" method="post">
+                <div class="modal-body py-4">
+                    <p class="text-white mb-3 bg-dark bg-opacity-25 p-2 rounded-3 border border-secondary border-opacity-25"><small>Moving: <strong id="moveFileNameDisplay"></strong></small></p>
+                    <input type="hidden" name="file_id" id="moveFileId">
+                    <label class="form-label text-white-50 small text-uppercase fw-bold">Destination Folder</label>
+                    <select name="target_folder_id" class="form-select glass-input p-3">
+                        <option value="root">/ (Root)</option>
+                        {% for folder in all_user_folders %}
+                        <option value="{{ folder.id }}">{{ folder.name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="modal-footer border-0 pt-0">
+                    <button type="button" class="btn btn-link text-white-50 text-decoration-none fw-bold" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-secondary px-4 fw-bold rounded-pill text-white shadow">Move Here</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+    const dropZone = document.getElementById('dropZone');
+    const uploadProgressContainer = document.getElementById('uploadProgressContainer');
+    const uploadProgressBar = document.getElementById('uploadProgressBar');
+    const uploadStatus = document.getElementById('uploadStatus');
+    const uploadPercentage = document.getElementById('uploadPercentage');
+    const uploadStatusText = document.getElementById('uploadStatusText');
+
+    function preventDefaults(e) { e.preventDefault(); e.stopPropagation(); }
+
+    function openPublicLinkModal(id, name, url) {
+        document.getElementById('publicFileName').innerText = name;
+        if (url) {
+            document.getElementById('publicLinkActiveArea').style.display = 'block';
+            document.getElementById('publicLinkInactiveArea').style.display = 'none';
+            document.getElementById('publicLinkUrl').value = url;
+            document.getElementById('revokeLinkForm').action = '/toggle_public_link/' + id;
+        } else {
+            document.getElementById('publicLinkActiveArea').style.display = 'none';
+            document.getElementById('publicLinkInactiveArea').style.display = 'block';
+            document.getElementById('generateLinkForm').action = '/toggle_public_link/' + id;
+        }
+        new bootstrap.Modal(document.getElementById('publicLinkModal')).show();
+    }
+
+    function copyPublicLink() {
+        var copyText = document.getElementById("publicLinkUrl");
+        copyText.select();
+        copyText.setSelectionRange(0, 99999);
+        navigator.clipboard.writeText(copyText.value);
+    }
+
+    function openRenameModal(id, name) {
+        document.getElementById('renameFolderId').value = id;
+        document.getElementById('renameFolderNameInput').value = name;
+        new bootstrap.Modal(document.getElementById('renameFolderModal')).show();
+    }
+
+    function openMoveModal(id, name) {
+        document.getElementById('moveFileId').value = id;
+        document.getElementById('moveFileNameDisplay').innerText = name;
+        new bootstrap.Modal(document.getElementById('moveFileModal')).show();
+    }
+
+    if (dropZone) {
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(e => dropZone.addEventListener(e, preventDefaults, false));
+        ['dragenter', 'dragover'].forEach(e => dropZone.addEventListener(e, () => dropZone.classList.add('highlight'), false));
+        ['dragleave', 'drop'].forEach(e => dropZone.addEventListener(e, () => dropZone.classList.remove('highlight'), false));
+        dropZone.addEventListener('drop', e => handleFiles(e.dataTransfer.files), false);
+    }
+
+    function handleFiles(files) { ([...files]).forEach(uploadFile); }
+
+    function uploadFile(file) {
+        let url = window.location.pathname;
+        let formData = new FormData();
+        formData.append('file', file);
+        uploadProgressContainer.style.display = 'block';
+        uploadStatusText.innerText = `Uploading: ${file.name}`;
+        uploadStatus.innerText = `Establishing connection...`;
+
+        let xhr = new XMLHttpRequest();
+        xhr.open('POST', url, true);
+        xhr.upload.addEventListener("progress", function (e) {
+            if (e.lengthComputable) {
+                let percent = Math.round((e.loaded / e.total) * 100);
+                uploadProgressBar.style.width = percent + '%';
+                uploadPercentage.innerText = percent + '%';
+                uploadStatus.innerText = `Sending data chunks...`;
+            }
+        });
+        xhr.onload = function () {
+            if (xhr.status == 200) {
+                uploadStatus.innerText = "Upload complete. Processing encryption & chunks in background...";
+                uploadProgressBar.classList.remove('progress-bar-animated');
+                uploadProgressBar.classList.add('bg-success');
+                setTimeout(() => window.location.reload(), 1500);
+            } else {
+                uploadStatus.innerText = "Upload failed!";
+                uploadProgressBar.classList.replace('bg-primary', 'bg-danger');
+            }
+        };
+        xhr.send(formData);
+    }
+
+    // Auto-refresh for active uploads
+    {% set ns = namespace(is_active=false) %}
+    {% for f in files_info %}
+        {% if f.status == 'Processing' or (f.status and f.status.startswith('Refreshing')) %}
+            {% set ns.is_active = true %}
+        {% endif %}
+    {% endfor %}
+    {% if ns.is_active %}
+    setTimeout(function() { window.location.reload(); }, 5000);
+    {% endif %}
+</script>
+{% endblock %}

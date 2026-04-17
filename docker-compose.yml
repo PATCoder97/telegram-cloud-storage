@@ -1,0 +1,33 @@
+services:
+  bot-api:
+    image: aiogram/telegram-bot-api:latest
+    container_name: telegram-bot-api
+    environment:
+      - TELEGRAM_BOT_TOKEN=8706570002:AAFyY-PxFOUgBK0P-1111
+      - TELEGRAM_API_ID=1111
+      - TELEGRAM_API_HASH=1111
+      - TELEGRAM_LOCAL=1
+    volumes:
+      - bot_api_data:/var/lib/telegram-bot-api
+    restart: unless-stopped
+    expose:
+      - "8081"
+
+  app:
+    build: .
+    container_name: telegram-cloud-storage
+    ports:
+      - "5010:5010"
+    environment:
+      - TELEGRAM_BOT_TOKEN=8706570002:AAFyY-PxFOUgBK0P-1111
+      - TELEGRAM_CHAT_ID=-1111
+    volumes:
+      - telegram_data:/app/data
+      - bot_api_data:/var/lib/telegram-bot-api
+    restart: unless-stopped
+    depends_on:
+      - bot-api
+
+volumes:
+  telegram_data:
+  bot_api_data:

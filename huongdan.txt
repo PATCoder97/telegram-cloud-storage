@@ -1,0 +1,34 @@
+Bước 1: Cách lấy TELEGRAM_BOT_TOKEN
+Mở ứng dụng Telegram (trên điện thoại hoặc máy tính đều được).
+Vào thanh Tìm kiếm (Search), gõ chữ @BotFather và bấm vào tài khoản có dấu tích xanh.
+Bấm nút START ở dưới cùng.
+Gõ dòng lệnh /newbot và bấm gửi.
+Telegram sẽ hỏi bạn muốn đặt tên bot là gì. Hãy nhập 1 cái tên tùy ý (Ví dụ: Kho Lưu Trữ Đám Mây).
+Telegram hỏi tiếp Username. Lúc này bạn bắt buộc phải viết liền không dấu, và phải có đuôi là chữ "bot" (Ví dụ: kholuutrudammay_bot).
+Thành công! Telegram sẽ gửi lại một tin nhắn dài, bao gồm 1 đoạn mã màu đỏ có dạng như sau: 123456789:ABCdefGhIJKlmNoPQRsTUVWxyz. 🎯 👉 Hãy Copy (Sao chép) chính xác đoạn mã này! Đây chính là TELEGRAM_BOT_TOKEN của bạn.
+Bước 2: Cách lấy TELEGRAM_CHAT_ID
+Vẫn trên Telegram, bạn bấm nút tạo một Nhóm chat mới (New Group).
+Trong lúc tạo nhóm, ứng dụng hỏi bạn muốn thêm ai vào không: Hãy gõ cái Username con bot (kholuutrudammay_bot) bạn vừa tạo ở Bước 1 để kéo nó vào nhóm chung với bạn. Đặt tên Nhóm theo ý thích (Ví dụ: Data Server).
+Dùng trình duyệt web trên máy tính truy cập vào Telegram Web (web.telegram.org) và mở nhóm bạn vừa tạo.
+Nhìn lên thanh đường dẫn trang web (URL) ở trên cùng của trình duyệt, bạn sẽ thấy nó có dạng: https://web.telegram.org/a/#-100987654321 🎯 👉 Hãy copy dãy số nằm phía sau cùng, bao gồm cả dấu trừ -. Tức là -100987654321. Đây chính là TELEGRAM_CHAT_ID của nhóm nơi bot sẽ quăng file vào để lưu trữ.
+Bước 3: Điền vào docker-compose.yml
+Sau khi dán 2 thông số đấy vào và lưu file lại, bạn mở Terminal lên và chạy lệnh: docker-compose down && docker-compose up -d Hệ thống sẽ chạy bình thường lên với sức mạnh lưu trữ Telegram! Cần giải thích thêm bước nào hãy nhắn lại cho mình nhé.
+
+
+
+BƯỚC 1: Truy cập trang quản lý & Đăng nhập
+Dùng trình duyệt web truy cập thẳng vào: https://my.telegram.org/
+Tại ô nhập số điện thoại, bạn điền mã quốc gia cùng với số điện thoại đăng ký Telegram của bạn (Ví dụ ở Việt Nam bấm: +84981234567). Rồi bấm Next.
+Đừng chờ mã sms ở điện thoại! Hãy lập tức mở ứng dụng Telegram (trên máy tính hoặc điện thoại). Sẽ có một tài khoản hệ thống tên là Telegram nhắn tin gửi cho bạn một đoạn mã Code (Ví dụ: aB3dEfGh).
+Bạn quay lại trang web lúc nãy, nhập đoạn Code đó vào ô Confirmation code và bấm Sign In.
+BƯỚC 2: Tạo App để lấy thông số
+Sau khi đăng nhập thành công, bạn sẽ thấy 3 dòng chữ. Hãy bấm vào dòng đầu tiên: API development tools.
+Nếu tài khoản của bạn chưa từng tạo, nó sẽ hiện ra một cái khung thông tin yêu cầu điền tạo App mới. Bạn chỉ cần điền 2 ô đầu tiên, các ô khác bỏ trống:
+App title: Tên ứng dụng của bạn (Điền bất kỳ, ví dụ: Cloud Server Demo)
+Short name: (Quan trọng) Bắt buộc viết liền, không dấu, bắt đầu bằng chữ cái. (Ví dụ: cloudserverdemo123).
+Ở mục Platform, chọn cái nào cũng được (ví dụ Desktop hoặc Other).
+Bấm nút màu xanh Create application.
+BƯỚC 3: Hoàn tất! Lấy mã
+Trang web sẽ load lại và trên màn hình sẽ xuất hiện bảng thông số kỹ thuật. Nhìn ngay 2 dòng đầu bạn sẽ thấy:
+App api_id: Dãy khoảng 7 đến 9 chữ số (Ví dụ: 22557182)
+App api_hash: Câu thần chú lằng ngoằng của bạn (Ví dụ: 98c4f9a3abcd1234efgh5678ijklm) 👉 Hãy copy 2 dòng này và dán trực tiếp vào file docker-compose.yml mà bạn đang mở là xong việc! Nhớ ấn Save và chạy lại lệnh Terminal nhé!

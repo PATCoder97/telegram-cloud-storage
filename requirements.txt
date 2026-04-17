@@ -1,0 +1,5 @@
+Flask
+pycryptodomex
+requests
+Flask-Login
+werkzeug
