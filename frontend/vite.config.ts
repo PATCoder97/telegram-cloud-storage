@@ -35,7 +35,9 @@ export default defineConfig(({ command }) => {
     return {
       plugins,
       resolve,
-      base: "",
+      // Use absolute asset URLs so hard refreshes on nested SPA routes such as
+      // `/files/` or `/settings/...` still load the built JS/CSS bundles.
+      base: "/",
       build: {
         outDir: "../frontend_dist",
         emptyOutDir: true,

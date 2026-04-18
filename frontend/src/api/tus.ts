@@ -111,11 +111,10 @@ function computeRetryDelays(tusSettings: TusSettings): number[] | undefined {
 }
 
 export async function useTus(content: ApiContent) {
-  return Boolean(tusSettings) && isTusSupported() && content instanceof Blob;
-}
-
-function isTusSupported() {
-  return tus.isSupported === true;
+  // This custom Flask backend does not implement `/api/tus`, so forcing
+  // direct uploads avoids the guaranteed 404 before our fallback kicks in.
+  void content;
+  return false;
 }
 
 export function abortAllUploads() {

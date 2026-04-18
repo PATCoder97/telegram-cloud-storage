@@ -53,7 +53,7 @@ def frontend_bootstrap_config():
         'DisableExternal': True,
         'DisableUsedPercentage': True,
         'Theme': 'dark',
-        'Version': 'v1.2.10',
+        'Version': 'v1.2.11',
         'Signup': False,
         'ReCaptcha': False,
         'ReCaptchaKey': '',
@@ -1607,20 +1607,24 @@ def api_download_url(file_id):
     return api_success({'url': url_for('download_and_decrypt', file_id=file_id)})
 
 
-@app.route('/assets/<path:filename>')
-def frontend_assets(filename):
-    assets_dir = os.path.join(FRONTEND_DIST, 'assets')
-    if os.path.exists(os.path.join(assets_dir, filename)):
-        return send_from_directory(assets_dir, filename)
+def send_frontend_dist_asset(directory, filename):
+    target_dir = os.path.join(FRONTEND_DIST, directory)
+    target_path = os.path.join(target_dir, filename)
+    if os.path.exists(target_path):
+        return send_from_directory(target_dir, filename)
     return "Not Found", 404
+
+
+@app.route('/assets/<path:filename>')
+@app.route('/<path:prefix>/assets/<path:filename>')
+def frontend_assets(filename, prefix=None):
+    return send_frontend_dist_asset('assets', filename)
 
 
 @app.route('/img/<path:filename>')
-def frontend_public_images(filename):
-    img_dir = os.path.join(FRONTEND_DIST, 'img')
-    if os.path.exists(os.path.join(img_dir, filename)):
-        return send_from_directory(img_dir, filename)
-    return "Not Found", 404
+@app.route('/<path:prefix>/img/<path:filename>')
+def frontend_public_images(filename, prefix=None):
+    return send_frontend_dist_asset('img', filename)
 
 
 # --- Main File Browser ---
