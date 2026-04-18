@@ -1,4 +1,4 @@
-FROM node:20-alpine AS frontend-build
+FROM node:20-bookworm-slim AS frontend-build
 
 WORKDIR /frontend
 COPY frontend/package.json frontend/tsconfig.json frontend/vite.config.ts frontend/index.html ./
