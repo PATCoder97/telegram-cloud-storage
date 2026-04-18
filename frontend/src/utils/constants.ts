@@ -26,6 +26,7 @@ function normalizeAppPath(path: unknown): string {
   return raw.startsWith("/") ? raw : `/${raw}`;
 }
 
+const telegramBrandIconURL = "https://telegram.org/img/t_logo.png";
 const name: string = window.FileBrowser.Name || "File Browser";
 const disableExternal: boolean = window.FileBrowser.DisableExternal;
 const disableUsedPercentage: boolean = window.FileBrowser.DisableUsedPercentage;
@@ -35,7 +36,8 @@ const recaptcha: string = window.FileBrowser.ReCaptcha;
 const recaptchaKey: string = window.FileBrowser.ReCaptchaKey;
 const signup: boolean = window.FileBrowser.Signup;
 const version: string = window.FileBrowser.Version;
-const logoURL = `${staticURL}/img/logo.svg`;
+const logoURL = telegramBrandIconURL;
+const faviconURL = telegramBrandIconURL;
 const noAuth: boolean = window.FileBrowser.NoAuth;
 const authMethod = window.FileBrowser.AuthMethod;
 const logoutPage: string = window.FileBrowser.LogoutPage;
@@ -60,6 +62,7 @@ export {
   baseURL,
   joinBaseURL,
   logoURL,
+  faviconURL,
   recaptcha,
   recaptchaKey,
   signup,
@@ -76,4 +79,5 @@ export {
   origin,
   tusEndpoint,
   hideLoginButton,
+  telegramBrandIconURL,
 };

@@ -13,6 +13,7 @@ import time
 import json
 import shutil
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import generate_password_hash, check_password_hash
 import threading
 import uuid
@@ -22,6 +23,9 @@ from urllib.parse import unquote
 
 app = Flask(__name__)
 app.secret_key = os.urandom(16)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+app.config['PREFERRED_URL_SCHEME'] = 'https'
+app.url_map.strict_slashes = False
 
 
 def log_message(message):
@@ -53,7 +57,7 @@ def frontend_bootstrap_config():
         'DisableExternal': True,
         'DisableUsedPercentage': True,
         'Theme': 'dark',
-        'Version': 'v1.2.11',
+        'Version': 'v1.2.12',
         'Signup': False,
         'ReCaptcha': False,
         'ReCaptchaKey': '',

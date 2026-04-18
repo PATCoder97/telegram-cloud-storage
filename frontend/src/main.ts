@@ -33,18 +33,24 @@ async function loadFrontendConfig() {
   new Function(source)();
 
   window.__prependStaticUrl = prependStaticUrl;
+  const telegramBrandIconURL = "https://telegram.org/img/t_logo.png";
+
+  document
+    .querySelector("link[rel='icon']")
+    ?.setAttribute("href", telegramBrandIconURL);
+  document
+    .querySelector("link[rel='shortcut icon']")
+    ?.setAttribute("href", telegramBrandIconURL);
+  document
+    .querySelector("link[rel='apple-touch-icon']")
+    ?.setAttribute("href", telegramBrandIconURL);
 
   const dynamicManifest = {
     name: window.FileBrowser.Name || "File Browser",
     short_name: window.FileBrowser.Name || "File Browser",
     icons: [
       {
-        src: prependStaticUrl("/img/icons/android-chrome-192x192.png"),
-        sizes: "192x192",
-        type: "image/png",
-      },
-      {
-        src: prependStaticUrl("/img/icons/android-chrome-512x512.png"),
+        src: telegramBrandIconURL,
         sizes: "512x512",
         type: "image/png",
       },
