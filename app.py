@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, send_file, redirect, url_for, after_this_request, flash, Response
+from flask import Flask, render_template, request, send_file, redirect, url_for, after_this_request, flash, Response, jsonify, send_from_directory
 from Cryptodome.Cipher import AES
 from Cryptodome.Random import get_random_bytes
 import os
@@ -23,6 +23,19 @@ app.secret_key = os.urandom(16)
 def log_message(message):
     print(message, flush=True)
 
+
+FRONTEND_DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'frontend_dist')
+
+
+def frontend_ready():
+    return os.path.exists(os.path.join(FRONTEND_DIST, 'index.html'))
+
+
+def render_frontend_or_template(template_name):
+    if frontend_ready():
+        return send_from_directory(FRONTEND_DIST, 'index.html')
+    return render_template(template_name)
+
 # All persistent data stored under /app/data (mapped to host via volume)
 DATA_DIR = os.environ.get('DATA_DIR', 'data')
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -42,6 +55,13 @@ for d in [TEMP_UPLOAD, TEMP_CHUNKS, TEMP_DOWNLOAD]:
 login_manager = LoginManager()
 login_manager.login_view = 'login'
 login_manager.init_app(app)
+
+
+@login_manager.unauthorized_handler
+def unauthorized_handler():
+    if request.path.startswith('/api/'):
+        return api_error('Unauthorized', 401)
+    return redirect(url_for('login', next=request.path))
 
 
 class User(UserMixin):
@@ -130,6 +150,44 @@ def convert_bytes(byte_size):
     return f"{byte_size:.2f} {unit}"
 
 
+def file_extension(filename):
+    return filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+
+
+def serialize_folder(row):
+    return {
+        'id': row[0],
+        'name': row[1]
+    }
+
+
+def serialize_file(result):
+    f_id, f_name, f_size, f_list, f_status, f_error_message, f_job_id, pub_token = result
+    return {
+        'id': f_id,
+        'file_name': f_name,
+        'formatted_size': convert_bytes(f_size),
+        'size_bytes': f_size,
+        'chunk_amount': len(f_list.split(', ')) if f_list else 0,
+        'status': f_status,
+        'job_id': f_job_id,
+        'public_token': pub_token,
+        'error_message': f_error_message,
+        'extension': file_extension(f_name)
+    }
+
+
+def api_error(message, status=400):
+    return jsonify({'ok': False, 'message': message}), status
+
+
+def api_success(payload=None, status=200):
+    body = {'ok': True}
+    if payload:
+        body.update(payload)
+    return jsonify(body), status
+
+
 def numerical_sort_key(filename):
     match = re.search(r'(?:\.chunk_|chunk_)(\d+)\.enc$', filename)
     return int(match.group(1)) if match else 0
@@ -149,6 +207,74 @@ def is_stopped(file_id):
         return False
 
 
+def get_all_user_folders(user_id):
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, name FROM folders WHERE owner_id = ?", (user_id,))
+    folders = [serialize_folder(r) for r in cursor.fetchall()]
+    conn.close()
+    return folders
+
+
+def get_breadcrumbs(folder_id):
+    breadcrumbs = [{'id': None, 'name': 'files'}]
+    if not folder_id:
+        return breadcrumbs
+
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    chain = []
+    current_id = folder_id
+    while current_id:
+        cursor.execute("SELECT id, name, parent_id FROM folders WHERE id = ? AND owner_id = ?", (current_id, current_user.id))
+        row = cursor.fetchone()
+        if not row:
+            break
+        chain.append({'id': row[0], 'name': row[1]})
+        current_id = row[2]
+    conn.close()
+    breadcrumbs.extend(reversed(chain))
+    return breadcrumbs
+
+
+def get_directory_payload(folder_id):
+    files_info, folders_info, current_folder_name, parent_folder_id = fetch_directory_contents(folder_id)
+    return {
+        'folder_id': folder_id,
+        'current_folder_name': current_folder_name,
+        'parent_folder_id': parent_folder_id,
+        'breadcrumbs': get_breadcrumbs(folder_id),
+        'folders': folders_info,
+        'files': files_info,
+        'all_user_folders': get_all_user_folders(current_user.id)
+    }
+
+
+def queue_upload(file_storage, folder_id):
+    os.makedirs(TEMP_UPLOAD, exist_ok=True)
+    file_path = os.path.join(TEMP_UPLOAD, file_storage.filename)
+    file_storage.save(file_path)
+
+    file_size = os.path.getsize(file_path)
+    upload_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    job_id = str(uuid.uuid4())
+
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""INSERT INTO files
+                      (file_name, chunk_list, message_ids, key_hex, file_size, upload_date, folder_id, owner_id, status, job_id)
+                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (file_storage.filename, '', '', '', file_size, upload_date, folder_id, current_user.id, 'Processing', job_id))
+    file_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+
+    thread = threading.Thread(target=process_file_background,
+                              args=(file_id, file_path, folder_id, current_user.id, job_id))
+    thread.start()
+    return file_id, job_id
+
+
 # --- Auth Routes ---
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -166,7 +292,7 @@ def login():
             login_user(user)
             return redirect(url_for('index'))
         flash('Invalid username or password', 'error')
-    return render_template('login.html')
+    return render_frontend_or_template('login.html')
 
 
 @app.route('/logout')
@@ -174,6 +300,266 @@ def login():
 def logout():
     logout_user()
     return redirect(url_for('login'))
+
+
+@app.route('/api/session', methods=['GET'])
+def api_get_session():
+    if not current_user.is_authenticated:
+        return api_success({'authenticated': False})
+    return api_success({
+        'authenticated': True,
+        'user': {
+            'id': current_user.id,
+            'username': current_user.username,
+            'role': current_user.role
+        }
+    })
+
+
+@app.route('/api/session', methods=['POST'])
+def api_login():
+    init_db()
+    payload = request.get_json(silent=True) or request.form
+    username = payload.get('username', '').strip()
+    password = payload.get('password', '')
+    if not username or not password:
+        return api_error('Thiếu tên đăng nhập hoặc mật khẩu', 400)
+
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, username, password, role FROM users WHERE username = ?", (username,))
+    user_data = cursor.fetchone()
+    conn.close()
+
+    if not user_data or not check_password_hash(user_data[2], password):
+        return api_error('Tên đăng nhập hoặc mật khẩu không đúng', 401)
+
+    user = User(user_data[0], user_data[1], user_data[3])
+    login_user(user)
+    return api_success({
+        'authenticated': True,
+        'user': {
+            'id': user.id,
+            'username': user.username,
+            'role': user.role
+        }
+    })
+
+
+@app.route('/api/session', methods=['DELETE'])
+@login_required
+def api_logout():
+    logout_user()
+    return api_success({'authenticated': False})
+
+
+@app.route('/api/browse', methods=['GET'])
+@app.route('/api/browse/<int:folder_id>', methods=['GET'])
+@login_required
+def api_browse(folder_id=None):
+    return api_success(get_directory_payload(folder_id))
+
+
+@app.route('/api/folders', methods=['POST'])
+@login_required
+def api_create_folder():
+    payload = request.get_json(silent=True) or request.form
+    name = (payload.get('name') or '').strip()
+    if not name:
+        return api_error('Tên thư mục không được để trống')
+
+    parent_id = payload.get('parent_id')
+    if parent_id in ('None', '', None, 'root'):
+        parent_id = None
+
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO folders (name, parent_id, owner_id) VALUES (?, ?, ?)", (name, parent_id, current_user.id))
+    folder_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return api_success({'folder': {'id': folder_id, 'name': name, 'parent_id': parent_id}}, 201)
+
+
+@app.route('/api/folders/<int:folder_id>', methods=['PATCH'])
+@login_required
+def api_rename_folder(folder_id):
+    payload = request.get_json(silent=True) or request.form
+    new_name = (payload.get('name') or '').strip()
+    if not new_name:
+        return api_error('Tên thư mục không được để trống')
+
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE folders SET name = ? WHERE id = ? AND owner_id = ?", (new_name, folder_id, current_user.id))
+    conn.commit()
+    changed = cursor.rowcount
+    conn.close()
+    if not changed:
+        return api_error('Không tìm thấy thư mục', 404)
+    return api_success({'folder': {'id': folder_id, 'name': new_name}})
+
+
+@app.route('/api/folders/<int:folder_id>', methods=['DELETE'])
+@login_required
+def api_delete_folder(folder_id):
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM folders WHERE id = ? AND owner_id = ?", (folder_id, current_user.id))
+    if not cursor.fetchone():
+        conn.close()
+        return api_error('Không có quyền hoặc không tìm thấy thư mục', 404)
+    cursor.execute("DELETE FROM folders WHERE id = ? OR parent_id = ?", (folder_id, folder_id))
+    cursor.execute("UPDATE files SET folder_id = NULL WHERE folder_id = ?", (folder_id,))
+    conn.commit()
+    conn.close()
+    return api_success({'message': 'Đã xóa thư mục, file được chuyển về root'})
+
+
+@app.route('/api/files/upload', methods=['POST'])
+@login_required
+def api_upload_file():
+    if 'file' not in request.files:
+        return api_error('Không có file được gửi lên')
+    file = request.files['file']
+    if not file or file.filename == '':
+        return api_error('Tên file không hợp lệ')
+    folder_id = request.form.get('folder_id') or request.args.get('folder_id')
+    if folder_id in ('None', '', None, 'root'):
+        folder_id = None
+    file_id, job_id = queue_upload(file, folder_id)
+    return api_success({'file_id': file_id, 'job_id': job_id}, 202)
+
+
+@app.route('/api/files/<int:file_id>/move', methods=['POST'])
+@login_required
+def api_move_file(file_id):
+    payload = request.get_json(silent=True) or request.form
+    target_folder_id = payload.get('target_folder_id')
+    if target_folder_id in ('root', '', None, 'None'):
+        target_folder_id = None
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE files SET folder_id = ? WHERE id = ? AND owner_id = ?",
+                   (target_folder_id, file_id, current_user.id))
+    conn.commit()
+    changed = cursor.rowcount
+    conn.close()
+    if not changed:
+        return api_error('Không tìm thấy file', 404)
+    return api_success({'message': 'Đã chuyển file'})
+
+
+@app.route('/api/files/<int:file_id>/public-link', methods=['POST'])
+@login_required
+def api_toggle_public_link(file_id):
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT owner_id, public_token FROM files WHERE id = ?", (file_id,))
+    result = cursor.fetchone()
+    if not result or result[0] != current_user.id:
+        conn.close()
+        return api_error('Không có quyền với file này', 404)
+
+    public_url = None
+    if result[1]:
+        cursor.execute("UPDATE files SET public_token = NULL WHERE id = ?", (file_id,))
+    else:
+        new_token = str(uuid.uuid4())
+        cursor.execute("UPDATE files SET public_token = ? WHERE id = ?", (new_token, file_id))
+        public_url = url_for('public_download', token=new_token, _external=True)
+
+    conn.commit()
+    conn.close()
+    return api_success({'public_url': public_url})
+
+
+@app.route('/api/files/<int:file_id>/retry', methods=['POST'])
+@login_required
+def api_retry_file(file_id):
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT file_name, job_id, message_ids FROM files WHERE id = ? AND owner_id = ?",
+                   (file_id, current_user.id))
+    result = cursor.fetchone()
+    conn.close()
+    if not result:
+        return api_error('Không tìm thấy file', 404)
+
+    file_name, job_id, message_ids = result
+    original_path = os.path.join(TEMP_UPLOAD, job_id, file_name) if job_id else None
+    if not original_path or not os.path.exists(original_path):
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE files SET status = 'Error', error_message = ? WHERE id = ?",
+                       ('Original file not found. Please re-upload.', file_id))
+        conn.commit()
+        conn.close()
+        return api_error('Không tìm thấy file gốc, hãy tải lên lại', 409)
+
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE files SET status = 'Processing', error_message = NULL WHERE id = ?", (file_id,))
+    conn.commit()
+    conn.close()
+
+    thread = threading.Thread(target=process_file_background,
+                              args=(file_id, original_path, None, current_user.id, job_id))
+    thread.start()
+    return api_success({'message': 'Đang thử tải lại'})
+
+
+@app.route('/api/files/<int:file_id>/stop', methods=['POST'])
+@login_required
+def api_stop_upload(file_id):
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM files WHERE id = ? AND owner_id = ?", (file_id, current_user.id))
+    if not cursor.fetchone():
+        conn.close()
+        return api_error('Không tìm thấy file', 404)
+    cursor.execute("UPDATE files SET status = 'Stopped', error_message = NULL WHERE id = ?", (file_id,))
+    conn.commit()
+    conn.close()
+    return api_success({'message': 'Đã yêu cầu dừng upload'})
+
+
+@app.route('/api/files/<int:file_id>', methods=['DELETE'])
+@login_required
+def api_delete_file(file_id):
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT owner_id, message_ids FROM files WHERE id=?", (file_id,))
+    result = cursor.fetchone()
+    if not result or result[0] != current_user.id:
+        conn.close()
+        return api_error('Không có quyền với file này', 404)
+    if result[1]:
+        for msg_id in result[1].split(', '):
+            try:
+                if msg_id and msg_id != "EMPTY":
+                    url = f"http://bot-api:8081/bot{TELEGRAM_BOT_TOKEN}/deleteMessage"
+                    http_requests.post(url, json={'chat_id': TELEGRAM_CHAT_ID, 'message_id': msg_id}, timeout=30)
+            except Exception as e:
+                log_message(f"Failed to delete message {msg_id}: {e}")
+    cursor.execute("DELETE FROM files WHERE id=?", (file_id,))
+    conn.commit()
+    conn.close()
+    return api_success({'message': 'Đã xóa file'})
+
+
+@app.route('/api/files/<int:file_id>/download-url', methods=['GET'])
+@login_required
+def api_download_url(file_id):
+    return api_success({'url': url_for('download_and_decrypt', file_id=file_id)})
+
+
+@app.route('/assets/<path:filename>')
+def frontend_assets(filename):
+    assets_dir = os.path.join(FRONTEND_DIST, 'assets')
+    if os.path.exists(os.path.join(assets_dir, filename)):
+        return send_from_directory(assets_dir, filename)
+    return "Not Found", 404
 
 
 # --- Main File Browser ---
@@ -186,27 +572,7 @@ def index(folder_id=None):
             return redirect(request.url)
         file = request.files['file']
         if file and file.filename != '':
-            os.makedirs(TEMP_UPLOAD, exist_ok=True)
-            file_path = os.path.join(TEMP_UPLOAD, file.filename)
-            file.save(file_path)
-
-            file_size = os.path.getsize(file_path)
-            upload_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            job_id = str(uuid.uuid4())
-
-            conn = sqlite3.connect(DATABASE_FILE)
-            cursor = conn.cursor()
-            cursor.execute("""INSERT INTO files
-                              (file_name, chunk_list, message_ids, key_hex, file_size, upload_date, folder_id, owner_id, status, job_id)
-                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                           (file.filename, '', '', '', file_size, upload_date, folder_id, current_user.id, 'Processing', job_id))
-            file_id = cursor.lastrowid
-            conn.commit()
-            conn.close()
-
-            thread = threading.Thread(target=process_file_background,
-                                      args=(file_id, file_path, folder_id, current_user.id, job_id))
-            thread.start()
+            queue_upload(file, folder_id)
             return redirect(url_for('index', folder_id=folder_id) if folder_id else url_for('index'))
 
     files_info, folders_info, current_folder_name, parent_folder_id = fetch_directory_contents(folder_id)
@@ -216,6 +582,9 @@ def index(folder_id=None):
     cursor.execute("SELECT id, name FROM folders WHERE owner_id = ?", (current_user.id,))
     all_user_folders = [{"id": r[0], "name": r[1]} for r in cursor.fetchall()]
     conn.close()
+
+    if frontend_ready():
+        return send_from_directory(FRONTEND_DIST, 'index.html')
 
     return render_template('index.html', files_info=files_info, folders_info=folders_info,
                            current_folder_id=folder_id, current_folder_name=current_folder_name,
@@ -234,16 +603,7 @@ def fetch_directory_contents(folder_id):
                    (folder_id, current_user.id))
     results = cursor.fetchall()
 
-    files_info = []
-    for result in results:
-        f_id, f_name, f_size, f_list, f_status, f_error_message, f_job_id, pub_token = result
-        chunk_amount = len(f_list.split(', ')) if f_list else 0
-        formatted_size = convert_bytes(f_size)
-        files_info.append({
-            'id': f_id, 'file_name': f_name, 'formatted_size': formatted_size,
-            'chunk_amount': chunk_amount, 'status': f_status, 'job_id': f_job_id,
-            'public_token': pub_token, 'error_message': f_error_message
-        })
+    files_info = [serialize_file(result) for result in results]
 
     current_folder_name = "Home"
     parent_folder_id = None
