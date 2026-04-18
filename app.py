@@ -52,7 +52,7 @@ def frontend_bootstrap_config():
         'DisableExternal': True,
         'DisableUsedPercentage': True,
         'Theme': 'dark',
-        'Version': 'v1.2.4',
+        'Version': 'v1.2.5',
         'Signup': False,
         'ReCaptcha': False,
         'ReCaptchaKey': '',
@@ -525,6 +525,50 @@ def resolve_folder_path_for_user(folder_path, user_id):
     return current_parent
 
 
+def ensure_folder_path_for_user(folder_path, user_id):
+    normalized = normalize_virtual_path(folder_path)
+    if normalized == '/':
+        return None, None
+
+    segments = [segment for segment in normalized.strip('/').split('/') if segment]
+    current_parent = None
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    try:
+        cursor.execute('BEGIN IMMEDIATE')
+        for raw_segment in segments:
+            cursor.execute(
+                "SELECT id FROM files WHERE file_name = ? AND folder_id IS ? AND owner_id = ?",
+                (raw_segment, current_parent, user_id),
+            )
+            if cursor.fetchone():
+                conn.rollback()
+                return None, 'Conflict'
+
+            cursor.execute(
+                "SELECT id FROM folders WHERE name = ? AND parent_id IS ? AND owner_id = ? ORDER BY id LIMIT 1",
+                (raw_segment, current_parent, user_id),
+            )
+            row = cursor.fetchone()
+            if row:
+                current_parent = row[0]
+                continue
+
+            cursor.execute(
+                "INSERT INTO folders (name, parent_id, owner_id) VALUES (?, ?, ?)",
+                (raw_segment, current_parent, user_id),
+            )
+            current_parent = cursor.lastrowid
+
+        conn.commit()
+        return current_parent, None
+    except sqlite3.Error:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def build_virtual_path(parent_path, name, is_dir=False):
     if not parent_path or parent_path == '/':
         path = '/' + name.strip('/')
@@ -973,6 +1017,7 @@ def api_browse_path(folder_path=''):
 @app.route('/api/resources/', methods=['GET', 'POST'])
 @app.route('/api/resources/<path:resource_path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH'])
 @app.route('/api/resources/<path:resource_path>/', methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH'])
+@app.route('/api/resources<path:resource_path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH'])
 def filebrowser_resources(resource_path=''):
     user_row, error = require_api_auth()
     if error:
@@ -1031,26 +1076,17 @@ def filebrowser_resources(resource_path=''):
             if request.method == 'PUT':
                 return fb_error('Cannot write directory content', 400)
 
-            parent_path, folder_name = split_virtual_path(normalized)
-            parent_id = resolve_folder_path_for_user(parent_path, user_id)
-            if parent_path and parent_id is None:
-                return fb_error('Parent not found', 404)
-            if normalized != '/' and resolve_folder_path_for_user(normalized, user_id) is not None:
-                if overwrite:
-                    return Response('', status=200)
-                return fb_error('Conflict', 409)
-
-            conn = sqlite3.connect(DATABASE_FILE)
-            cursor = conn.cursor()
-            cursor.execute("INSERT INTO folders (name, parent_id, owner_id) VALUES (?, ?, ?)", (folder_name, parent_id, user_id))
-            conn.commit()
-            conn.close()
+            folder_id, ensure_error = ensure_folder_path_for_user(normalized, user_id)
+            if ensure_error:
+                return fb_error(ensure_error, 409)
+            if folder_id is None and normalized != '/':
+                return fb_error('Failed to create folder', 500)
             return Response('', status=200)
 
         parent_path, file_name = split_virtual_path(normalized)
-        folder_id = resolve_folder_path_for_user(parent_path, user_id)
-        if parent_path and folder_id is None:
-            return fb_error('Parent not found', 404)
+        folder_id, ensure_error = ensure_folder_path_for_user(parent_path, user_id)
+        if ensure_error:
+            return fb_error(ensure_error, 409)
 
         existing_file = find_file_by_virtual_path(normalized, user_id)
         if existing_file and request.method == 'POST' and not overwrite:
@@ -1122,6 +1158,7 @@ def filebrowser_resources(resource_path=''):
 @app.route('/api/raw', methods=['GET'])
 @app.route('/api/raw/', methods=['GET'])
 @app.route('/api/raw/<path:resource_path>', methods=['GET'])
+@app.route('/api/raw<path:resource_path>', methods=['GET'])
 def filebrowser_raw(resource_path=''):
     user_row, error = require_api_auth()
     if error:
@@ -1147,6 +1184,7 @@ def filebrowser_raw(resource_path=''):
 @app.route('/api/usage', methods=['GET'])
 @app.route('/api/usage/', methods=['GET'])
 @app.route('/api/usage/<path:resource_path>', methods=['GET'])
+@app.route('/api/usage<path:resource_path>', methods=['GET'])
 def filebrowser_usage(resource_path=''):
     user_row, error = require_api_auth()
     if error:

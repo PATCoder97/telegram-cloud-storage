@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+
+{% block title %}Login - Telegram Cloud Storage{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center align-items-center" style="min-height: 70vh;">
+    <div class="col-md-5 col-lg-4">
+        <div class="glass-morphism p-5 text-center position-relative overflow-hidden">
+            <!-- Decorative Glow Backgrounds inside Card -->
+            <div class="position-absolute rounded-circle" style="width: 150px; height: 150px; background: rgba(99, 102, 241, 0.2); filter: blur(40px); top: -50px; left: -50px;"></div>
+            <div class="position-absolute rounded-circle" style="width: 150px; height: 150px; background: rgba(168, 85, 247, 0.15); filter: blur(40px); bottom: -50px; right: -50px;"></div>
+            
+            <div class="position-relative" style="z-index: 1;">
+                <div class="mb-4 d-inline-block p-3 rounded-circle" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);">
+                    <i class="fas fa-fingerprint fa-3x" style="color: var(--accent-color);"></i>
+                </div>
+                <h2 class="text-white fw-bold mb-1">Welcome Back</h2>
+                <p class="text-white-50 mb-4 small">Securely login to your cloud storage</p>
+                
+                <form action="{{ url_for('login') }}" method="post" class="text-start">
+                    <div class="mb-4">
+                        <label for="username" class="form-label text-white-50 small text-uppercase fw-bold" style="letter-spacing: 0.05em;">Username</label>
+                        <div class="input-group">
+                            <span class="input-group-text bg-transparent border-0 position-absolute text-white-50 pt-2 ps-3" style="z-index: 5;"><i class="fas fa-user"></i></span>
+                            <input type="text" class="form-control glass-input w-100 ps-5" id="username" name="username" placeholder="Enter your username" required>
+                        </div>
+                    </div>
+                    <div class="mb-4">
+                        <label for="password" class="form-label text-white-50 small text-uppercase fw-bold" style="letter-spacing: 0.05em;">Password</label>
+                        <div class="input-group">
+                            <span class="input-group-text bg-transparent border-0 position-absolute text-white-50 pt-2 ps-3" style="z-index: 5;"><i class="fas fa-lock"></i></span>
+                            <input type="password" class="form-control glass-input w-100 ps-5" id="password" name="password" placeholder="••••••••" required>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary w-100 py-2 rounded-3 fw-bold mt-2" style="font-size: 1.1rem; letter-spacing: 0.05em;">
+                        Sign In <i class="fas fa-arrow-right ms-2 align-middle"></i>
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
