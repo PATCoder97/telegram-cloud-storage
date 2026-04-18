@@ -4,6 +4,9 @@ from Cryptodome.Random import get_random_bytes
 import os
 import sqlite3
 from datetime import datetime
+import base64
+import hashlib
+import hmac
 import requests as http_requests
 import concurrent.futures
 import time
@@ -15,6 +18,7 @@ import threading
 import uuid
 import re
 import traceback
+from urllib.parse import unquote
 
 app = Flask(__name__)
 app.secret_key = os.urandom(16)
@@ -25,6 +29,7 @@ def log_message(message):
 
 
 FRONTEND_DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'frontend_dist')
+USER_PREFERENCES = {}
 
 
 def frontend_ready():
@@ -40,7 +45,7 @@ def render_frontend_or_template(template_name):
 def frontend_bootstrap_config():
     return {
         'Name': 'Telegram Cloud Storage',
-        'BaseURL': '/',
+        'BaseURL': '',
         'StaticURL': '',
         'LoginPage': True,
         'NoAuth': False,
@@ -49,14 +54,16 @@ def frontend_bootstrap_config():
         'Theme': 'dark',
         'Version': 'compat',
         'Signup': False,
-        'ReCaptcha': '',
+        'ReCaptcha': False,
         'ReCaptchaKey': '',
-        'AuthMethod': 'password',
-        'LogoutPage': '',
+        'AuthMethod': 'json',
+        'LogoutPage': '/logout',
         'EnableThumbs': False,
         'ResizePreview': False,
         'EnableExec': False,
-        'TusSettings': None,
+        'CSS': False,
+        'Color': '',
+        'TusSettings': {'chunkSize': 10485760, 'retryCount': 5},
         'HideLoginButton': False,
     }
 
@@ -219,6 +226,206 @@ def api_success(payload=None, status=200):
     return jsonify(body), status
 
 
+def fb_error(message, status=400, headers=None):
+    response = Response(str(message), status=status, mimetype='text/plain; charset=utf-8')
+    if headers:
+        for key, value in headers.items():
+            response.headers[key] = value
+    return response
+
+
+def fb_json(payload, status=200, headers=None):
+    response = jsonify(payload)
+    response.status_code = status
+    if headers:
+        for key, value in headers.items():
+            response.headers[key] = value
+    return response
+
+
+def now_iso():
+    return datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
+
+
+def filebrowser_permissions(role):
+    return {
+        'admin': False,
+        'copy': False,
+        'create': True,
+        'delete': True,
+        'download': True,
+        'execute': False,
+        'modify': True,
+        'move': True,
+        'rename': True,
+        'share': False,
+        'shell': False,
+        'upload': True,
+    }
+
+
+def default_user_preferences():
+    return {
+        'viewMode': 'mosaic',
+        'sorting': {'by': 'name', 'asc': True},
+        'locale': 'vi',
+        'dateFormat': False,
+        'singleClick': False,
+        'hideDotfiles': False,
+        'redirectAfterCopyMove': False,
+        'aceEditorTheme': 'github',
+    }
+
+
+def get_user_preferences(user_id):
+    prefs = USER_PREFERENCES.get(user_id)
+    if not prefs:
+        prefs = default_user_preferences()
+        USER_PREFERENCES[user_id] = prefs
+    return prefs
+
+
+def filebrowser_user_from_row(row):
+    prefs = get_user_preferences(row[0])
+    return {
+        'id': row[0],
+        'username': row[1],
+        'password': '',
+        'scope': '/',
+        'locale': prefs['locale'],
+        'perm': filebrowser_permissions(row[2]),
+        'commands': [],
+        'rules': [],
+        'lockPassword': False,
+        'hideDotfiles': prefs['hideDotfiles'],
+        'singleClick': prefs['singleClick'],
+        'redirectAfterCopyMove': prefs['redirectAfterCopyMove'],
+        'dateFormat': prefs['dateFormat'],
+        'viewMode': prefs['viewMode'],
+        'sorting': prefs['sorting'],
+        'aceEditorTheme': prefs['aceEditorTheme'],
+    }
+
+
+def fetch_user_row(user_id):
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, username, role FROM users WHERE id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row
+
+
+def base64url_encode(data):
+    return base64.urlsafe_b64encode(data).rstrip(b'=').decode('ascii')
+
+
+def base64url_decode(value):
+    padding = '=' * (-len(value) % 4)
+    return base64.urlsafe_b64decode((value + padding).encode('ascii'))
+
+
+def issue_api_token(user_row, expiry_seconds=86400):
+    header = {'alg': 'HS256', 'typ': 'JWT'}
+    payload = {
+        'exp': int(time.time()) + expiry_seconds,
+        'user': filebrowser_user_from_row(user_row),
+    }
+    header_b64 = base64url_encode(json.dumps(header, separators=(',', ':')).encode('utf-8'))
+    payload_b64 = base64url_encode(json.dumps(payload, separators=(',', ':')).encode('utf-8'))
+    signing_input = f"{header_b64}.{payload_b64}".encode('ascii')
+    signature = hmac.new(app.secret_key, signing_input, hashlib.sha256).digest()
+    return f"{header_b64}.{payload_b64}.{base64url_encode(signature)}"
+
+
+def verify_api_token(token):
+    try:
+        header_b64, payload_b64, signature_b64 = token.split('.')
+        signing_input = f"{header_b64}.{payload_b64}".encode('ascii')
+        expected_sig = hmac.new(app.secret_key, signing_input, hashlib.sha256).digest()
+        actual_sig = base64url_decode(signature_b64)
+        if not hmac.compare_digest(expected_sig, actual_sig):
+            return None
+        payload = json.loads(base64url_decode(payload_b64))
+        if int(payload.get('exp', 0)) <= int(time.time()):
+            return None
+        user = payload.get('user') or {}
+        user_id = user.get('id')
+        if not user_id:
+            return None
+        row = fetch_user_row(user_id)
+        return row
+    except Exception:
+        return None
+
+
+def api_auth_row():
+    if current_user.is_authenticated:
+        row = fetch_user_row(current_user.id)
+        if row:
+            return row
+    token = request.headers.get('X-Auth', '').strip() or request.cookies.get('auth', '').strip()
+    if token:
+        return verify_api_token(token)
+    return None
+
+
+def require_api_auth():
+    row = api_auth_row()
+    if not row:
+        return None, fb_error('Unauthorized', 401)
+    return row, None
+
+
+def normalize_virtual_path(resource_path=''):
+    clean = unquote(resource_path or '').strip()
+    if not clean or clean == '/':
+        return '/'
+    clean = '/' + clean.strip('/')
+    if request.path.endswith('/') and not clean.endswith('/'):
+        clean += '/'
+    return clean
+
+
+def split_virtual_path(resource_path=''):
+    normalized = normalize_virtual_path(resource_path)
+    if normalized == '/':
+        return '', ''
+    stripped = normalized.strip('/')
+    parts = stripped.split('/')
+    if normalized.endswith('/'):
+        return '/'.join(parts), ''
+    if len(parts) == 1:
+        return '', parts[0]
+    return '/'.join(parts[:-1]), parts[-1]
+
+
+def classify_resource_type(name, is_dir):
+    if is_dir:
+        return 'dir'
+    ext = os.path.splitext(name)[1].lower()
+    if ext in ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'):
+        return 'image'
+    if ext in ('.mp4', '.mkv', '.avi', '.mov', '.webm'):
+        return 'video'
+    if ext in ('.mp3', '.wav', '.ogg', '.flac', '.aac'):
+        return 'audio'
+    if ext == '.pdf':
+        return 'pdf'
+    if ext in (
+        '.txt', '.md', '.markdown', '.json', '.yaml', '.yml', '.csv', '.log',
+        '.ini', '.toml', '.xml', '.py', '.js', '.ts', '.tsx', '.jsx',
+        '.html', '.htm', '.css', '.scss', '.sass', '.less', '.sh', '.env',
+        '.sql', '.conf', '.cfg',
+    ):
+        return 'text'
+    return 'blob'
+
+
+def is_text_like_file(name):
+    return classify_resource_type(name, False) == 'text'
+
+
 def numerical_sort_key(filename):
     match = re.search(r'(?:\.chunk_|chunk_)(\d+)\.enc$', filename)
     return int(match.group(1)) if match else 0
@@ -247,15 +454,17 @@ def get_all_user_folders(user_id):
     return folders
 
 
-def folder_segments_from_id(folder_id):
+def folder_segments_from_id(folder_id, user_id=None):
     if not folder_id:
         return []
+    if user_id is None:
+        user_id = current_user.id
     conn = sqlite3.connect(DATABASE_FILE)
     cursor = conn.cursor()
     chain = []
     current_id = folder_id
     while current_id:
-        cursor.execute("SELECT id, name, parent_id FROM folders WHERE id = ? AND owner_id = ?", (current_id, current_user.id))
+        cursor.execute("SELECT id, name, parent_id FROM folders WHERE id = ? AND owner_id = ?", (current_id, user_id))
         row = cursor.fetchone()
         if not row:
             break
@@ -265,8 +474,8 @@ def folder_segments_from_id(folder_id):
     return list(reversed(chain))
 
 
-def folder_path_from_id(folder_id):
-    segments = folder_segments_from_id(folder_id)
+def folder_path_from_id(folder_id, user_id=None):
+    segments = folder_segments_from_id(folder_id, user_id)
     return '/'.join(segment['name'] for segment in segments)
 
 
@@ -294,6 +503,269 @@ def resolve_folder_path(folder_path):
     return current_parent
 
 
+def resolve_folder_path_for_user(folder_path, user_id):
+    if not folder_path:
+        return None
+    clean_path = folder_path.strip('/')
+    if not clean_path:
+        return None
+
+    current_parent = None
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    for raw_segment in [segment for segment in clean_path.split('/') if segment]:
+        cursor.execute(
+            "SELECT id FROM folders WHERE name = ? AND parent_id IS ? AND owner_id = ?",
+            (raw_segment, current_parent, user_id),
+        )
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return None
+        current_parent = row[0]
+    conn.close()
+    return current_parent
+
+
+def build_virtual_path(parent_path, name, is_dir=False):
+    if not parent_path or parent_path == '/':
+        path = '/' + name.strip('/')
+    else:
+        path = '/' + parent_path.strip('/') + '/' + name.strip('/')
+    if is_dir and not path.endswith('/'):
+        path += '/'
+    return path
+
+
+def find_file_by_virtual_path(resource_path, user_id):
+    folder_path, file_name = split_virtual_path(resource_path)
+    folder_id = resolve_folder_path_for_user(folder_path, user_id)
+    if folder_path and folder_id is None:
+        return None
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute(
+        """SELECT id, file_name, file_size, chunk_list, status, error_message, job_id, public_token, key_hex, upload_date, folder_id
+           FROM files WHERE file_name = ? AND folder_id IS ? AND owner_id = ?""",
+        (file_name, folder_id, user_id),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return row
+
+
+def directory_parent_path(folder_id, user_id):
+    if not folder_id:
+        return '/'
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT parent_id FROM folders WHERE id = ? AND owner_id = ?", (folder_id, user_id))
+    row = cursor.fetchone()
+    conn.close()
+    return '/' + folder_path_from_id(row[0], user_id).strip('/') + ('/' if row and row[0] else '')
+
+
+def serialize_fb_item(row, parent_path, is_dir):
+    if is_dir:
+        item_id, name = row[0], row[1]
+        modified = now_iso()
+        size = 0
+        path = build_virtual_path(parent_path, name, True)
+        extension = ''
+        item_type = 'dir'
+    else:
+        item_id, name, size, upload_date = row[0], row[1], row[2], row[3]
+        modified = datetime.strptime(upload_date, '%Y-%m-%d %H:%M:%S').isoformat() + 'Z' if upload_date else now_iso()
+        path = build_virtual_path(parent_path, name, False)
+        extension = os.path.splitext(name)[1].lower()
+        item_type = classify_resource_type(name, False)
+    return {
+        'index': 0,
+        'name': name,
+        'path': path,
+        'size': size,
+        'extension': extension,
+        'modified': modified,
+        'mode': 0,
+        'isDir': is_dir,
+        'isSymlink': False,
+        'type': item_type,
+        'url': '',
+    }
+
+
+def build_directory_resource(folder_id, user_row):
+    user_id = user_row[0]
+    parent_path = folder_path_from_id(folder_id, user_id)
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, name FROM folders WHERE parent_id IS ? AND owner_id = ?", (folder_id, user_id))
+    folders = [serialize_fb_item(row, parent_path, True) for row in cursor.fetchall()]
+    cursor.execute("SELECT id, file_name, file_size, upload_date FROM files WHERE folder_id IS ? AND owner_id = ?", (folder_id, user_id))
+    files = [serialize_fb_item(row, parent_path, False) for row in cursor.fetchall()]
+    conn.close()
+
+    prefs = get_user_preferences(user_id)
+    by = prefs['sorting']['by']
+    asc = prefs['sorting']['asc']
+
+    def sort_key(item):
+        if by == 'size':
+            return item['size']
+        if by == 'modified':
+            return item['modified']
+        return item['name'].lower()
+
+    folders = sorted(folders, key=sort_key, reverse=not asc)
+    files = sorted(files, key=sort_key, reverse=not asc)
+    items = folders + files
+    for index, item in enumerate(items):
+        item['index'] = index
+
+    folder_name = parent_path.split('/')[-1] if parent_path else ''
+    return {
+        'path': '/' + parent_path.strip('/') + ('/' if parent_path else ''),
+        'name': folder_name,
+        'size': 0,
+        'extension': '',
+        'modified': now_iso(),
+        'mode': 0,
+        'isDir': True,
+        'isSymlink': False,
+        'type': 'dir',
+        'items': items,
+        'numDirs': len(folders),
+        'numFiles': len(files),
+        'sorting': prefs['sorting'],
+    }
+
+
+def build_file_resource(file_row, user_row):
+    file_id, file_name, file_size, chunk_list, status, error_message, job_id, public_token, key_hex, upload_date, folder_id = file_row
+    parent_path = folder_path_from_id(folder_id, user_row[0])
+    ext = os.path.splitext(file_name)[1].lower()
+    modified = datetime.strptime(upload_date, '%Y-%m-%d %H:%M:%S').isoformat() + 'Z' if upload_date else now_iso()
+    return {
+        'path': build_virtual_path(parent_path, file_name, False),
+        'name': file_name,
+        'size': file_size,
+        'extension': ext,
+        'modified': modified,
+        'mode': 0,
+        'isDir': False,
+        'isSymlink': False,
+        'type': classify_resource_type(file_name, False),
+    }
+
+
+class UploadedBlob:
+    def __init__(self, filename, source_path):
+        self.filename = filename
+        self.source_path = source_path
+
+    def save(self, destination):
+        shutil.move(self.source_path, destination)
+
+
+def write_temp_blob(filename, content):
+    os.makedirs(TEMP_UPLOAD, exist_ok=True)
+    temp_input = os.path.join(TEMP_UPLOAD, f"raw_{uuid.uuid4().hex}_{filename}")
+    with open(temp_input, 'wb') as target:
+        target.write(content)
+    return UploadedBlob(filename, temp_input)
+
+
+def fetch_file_storage_by_id(file_id, user_id):
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute(
+        """SELECT id, file_name, chunk_list, message_ids, key_hex, file_size, upload_date, folder_id, owner_id
+           FROM files WHERE id = ? AND owner_id = ?""",
+        (file_id, user_id),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return row
+
+
+def fetch_file_storage_by_virtual_path(resource_path, user_id):
+    file_row = find_file_by_virtual_path(resource_path, user_id)
+    if not file_row:
+        return None
+    return fetch_file_storage_by_id(file_row[0], user_id)
+
+
+def delete_telegram_messages(message_ids_str):
+    if not message_ids_str:
+        return
+    for msg_id in str(message_ids_str).split(', '):
+        if not msg_id or msg_id == 'EMPTY':
+            continue
+        try:
+            url = f"http://bot-api:8081/bot{TELEGRAM_BOT_TOKEN}/deleteMessage"
+            http_requests.post(url, json={'chat_id': TELEGRAM_CHAT_ID, 'message_id': msg_id}, timeout=30)
+        except Exception as e:
+            log_message(f"Failed to delete message {msg_id}: {e}")
+
+
+def delete_file_record(file_id, user_id):
+    file_row = fetch_file_storage_by_id(file_id, user_id)
+    if not file_row:
+        return False
+    delete_telegram_messages(file_row[3])
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM files WHERE id = ? AND owner_id = ?", (file_id, user_id))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def collect_descendant_folder_ids(folder_id, user_id):
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    queue = [folder_id]
+    folder_ids = []
+
+    while queue:
+        current_id = queue.pop(0)
+        folder_ids.append(current_id)
+        cursor.execute("SELECT id FROM folders WHERE parent_id = ? AND owner_id = ?", (current_id, user_id))
+        queue.extend(row[0] for row in cursor.fetchall())
+
+    conn.close()
+    return folder_ids
+
+
+def delete_folder_tree(folder_id, user_id):
+    folder_ids = collect_descendant_folder_ids(folder_id, user_id)
+    if not folder_ids:
+        return False
+
+    placeholders = ','.join('?' for _ in folder_ids)
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute(
+        f"SELECT id FROM files WHERE owner_id = ? AND folder_id IN ({placeholders})",
+        [user_id, *folder_ids],
+    )
+    file_ids = [row[0] for row in cursor.fetchall()]
+    conn.close()
+
+    for file_id in file_ids:
+        delete_file_record(file_id, user_id)
+
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute(
+        f"DELETE FROM folders WHERE owner_id = ? AND id IN ({placeholders})",
+        [user_id, *folder_ids],
+    )
+    conn.commit()
+    conn.close()
+    return True
+
+
 def get_breadcrumbs(folder_id):
     breadcrumbs = [{'id': None, 'name': 'files'}]
     if not folder_id:
@@ -317,29 +789,35 @@ def get_directory_payload(folder_id):
     }
 
 
-def queue_upload(file_storage, folder_id):
+def queue_upload_for_user(file_storage, folder_id, user_id):
     os.makedirs(TEMP_UPLOAD, exist_ok=True)
-    file_path = os.path.join(TEMP_UPLOAD, file_storage.filename)
+    job_id = str(uuid.uuid4())
+    job_dir = os.path.join(TEMP_UPLOAD, job_id)
+    os.makedirs(job_dir, exist_ok=True)
+    file_path = os.path.join(job_dir, file_storage.filename)
     file_storage.save(file_path)
 
     file_size = os.path.getsize(file_path)
     upload_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    job_id = str(uuid.uuid4())
 
     conn = sqlite3.connect(DATABASE_FILE)
     cursor = conn.cursor()
     cursor.execute("""INSERT INTO files
                       (file_name, chunk_list, message_ids, key_hex, file_size, upload_date, folder_id, owner_id, status, job_id)
                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                   (file_storage.filename, '', '', '', file_size, upload_date, folder_id, current_user.id, 'Processing', job_id))
+                   (file_storage.filename, '', '', '', file_size, upload_date, folder_id, user_id, 'Processing', job_id))
     file_id = cursor.lastrowid
     conn.commit()
     conn.close()
 
     thread = threading.Thread(target=process_file_background,
-                              args=(file_id, file_path, folder_id, current_user.id, job_id))
+                              args=(file_id, file_path, folder_id, user_id, job_id))
     thread.start()
     return file_id, job_id
+
+
+def queue_upload(file_storage, folder_id):
+    return queue_upload_for_user(file_storage, folder_id, current_user.id)
 
 
 # --- Auth Routes ---
@@ -357,15 +835,18 @@ def login():
         if user_data and check_password_hash(user_data[2], password):
             user = User(user_data[0], user_data[1], user_data[3])
             login_user(user)
+            if frontend_ready():
+                next_url = request.args.get('next') or url_for('files_frontend')
+                return redirect(next_url)
             return redirect(url_for('index'))
         flash('Invalid username or password', 'error')
     return render_frontend_or_template('login.html')
 
 
 @app.route('/logout')
-@login_required
 def logout():
-    logout_user()
+    if current_user.is_authenticated:
+        logout_user()
     return redirect(url_for('login'))
 
 
@@ -373,10 +854,10 @@ def logout():
 @app.route('/files/')
 @app.route('/files/<path:folder_path>')
 def files_frontend(folder_path=''):
-    if not current_user.is_authenticated:
-        return redirect(url_for('login', next=request.path))
     if frontend_ready():
         return send_from_directory(FRONTEND_DIST, 'index.html')
+    if not current_user.is_authenticated:
+        return redirect(url_for('login', next=request.path))
     folder_id = resolve_folder_path(folder_path)
     if folder_path and folder_id is None:
         return "Folder not found", 404
@@ -434,6 +915,45 @@ def api_logout():
     return api_success({'authenticated': False})
 
 
+@app.route('/api/login', methods=['POST'])
+def filebrowser_login():
+    init_db()
+    payload = request.get_json(silent=True) or {}
+    username = (payload.get('username') or '').strip()
+    password = payload.get('password') or ''
+    if not username or not password:
+        return fb_error('Missing credentials', 400)
+
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, username, password, role FROM users WHERE username = ?", (username,))
+    user_data = cursor.fetchone()
+    conn.close()
+    if not user_data or not check_password_hash(user_data[2], password):
+        return fb_error('Wrong credentials', 403)
+
+    user = User(user_data[0], user_data[1], user_data[3])
+    login_user(user)
+    token = issue_api_token((user_data[0], user_data[1], user_data[3]))
+    return Response(token, status=200, mimetype='text/plain; charset=utf-8')
+
+
+@app.route('/api/renew', methods=['POST'])
+def filebrowser_renew():
+    row, error = require_api_auth()
+    if error:
+        return error
+    user = User(row[0], row[1], row[2])
+    login_user(user)
+    token = issue_api_token(row)
+    return Response(token, status=200, mimetype='text/plain; charset=utf-8')
+
+
+@app.route('/api/signup', methods=['POST'])
+def filebrowser_signup():
+    return fb_error('Signup disabled', 403)
+
+
 @app.route('/api/browse', methods=['GET'])
 @app.route('/api/browse/<int:folder_id>', methods=['GET'])
 @login_required
@@ -449,6 +969,282 @@ def api_browse_path(folder_path=''):
     if folder_path and folder_id is None:
         return api_error('Không tìm thấy thư mục', 404)
     return api_success(get_directory_payload(folder_id))
+
+
+@app.route('/api/resources', methods=['GET', 'POST'])
+@app.route('/api/resources/', methods=['GET', 'POST'])
+@app.route('/api/resources/<path:resource_path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH'])
+def filebrowser_resources(resource_path=''):
+    user_row, error = require_api_auth()
+    if error:
+        return error
+
+    normalized = normalize_virtual_path(resource_path)
+    user_id = user_row[0]
+    overwrite = (request.args.get('override') or 'false').lower() == 'true'
+
+    if request.method == 'GET':
+        if normalized.endswith('/'):
+            folder_id = resolve_folder_path_for_user(normalized, user_id)
+            if normalized != '/' and folder_id is None:
+                return fb_error('Not found', 404)
+            return fb_json(build_directory_resource(folder_id, user_row))
+
+        file_row = find_file_by_virtual_path(normalized, user_id)
+        if not file_row:
+            return fb_error('Not found', 404)
+
+        checksum_algo = (request.args.get('checksum') or '').lower()
+        if checksum_algo:
+            if checksum_algo not in ('md5', 'sha1', 'sha256', 'sha512'):
+                return fb_error('Unsupported checksum', 400)
+            storage_row = fetch_file_storage_by_id(file_row[0], user_id)
+            try:
+                content = read_decrypted_content(
+                    storage_row[1],
+                    storage_row[2].split(', ') if storage_row[2] else [],
+                    storage_row[4],
+                )
+            except Exception as exc:
+                log_message(f"Failed to checksum file {normalized}: {exc}")
+                return fb_error('Failed to read file', 500)
+            return fb_json({'checksums': {checksum_algo: hashlib.new(checksum_algo, content).hexdigest()}})
+
+        if is_text_like_file(file_row[1]):
+            storage_row = fetch_file_storage_by_id(file_row[0], user_id)
+            try:
+                content = read_decrypted_content(
+                    storage_row[1],
+                    storage_row[2].split(', ') if storage_row[2] else [],
+                    storage_row[4],
+                )
+            except FileNotFoundError as exc:
+                return fb_error(str(exc), 404)
+            except Exception as exc:
+                log_message(f"Failed to read text file {normalized}: {exc}")
+                return fb_error('Failed to read file', 500)
+            return Response(content, status=200, mimetype='application/octet-stream')
+
+        return fb_json(build_file_resource(file_row, user_row))
+
+    if request.method in ('POST', 'PUT'):
+        if normalized.endswith('/'):
+            if request.method == 'PUT':
+                return fb_error('Cannot write directory content', 400)
+
+            parent_path, folder_name = split_virtual_path(normalized)
+            parent_id = resolve_folder_path_for_user(parent_path, user_id)
+            if parent_path and parent_id is None:
+                return fb_error('Parent not found', 404)
+            if normalized != '/' and resolve_folder_path_for_user(normalized, user_id) is not None:
+                if overwrite:
+                    return Response('', status=200)
+                return fb_error('Conflict', 409)
+
+            conn = sqlite3.connect(DATABASE_FILE)
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO folders (name, parent_id, owner_id) VALUES (?, ?, ?)", (folder_name, parent_id, user_id))
+            conn.commit()
+            conn.close()
+            return Response('', status=200)
+
+        parent_path, file_name = split_virtual_path(normalized)
+        folder_id = resolve_folder_path_for_user(parent_path, user_id)
+        if parent_path and folder_id is None:
+            return fb_error('Parent not found', 404)
+
+        existing_file = find_file_by_virtual_path(normalized, user_id)
+        if existing_file and request.method == 'POST' and not overwrite:
+            return fb_error('Conflict', 409)
+        if existing_file:
+            delete_file_record(existing_file[0], user_id)
+
+        upload_blob = write_temp_blob(file_name, request.get_data() or b'')
+        file_id, _job_id = queue_upload_for_user(upload_blob, folder_id, user_id)
+        return Response(str(file_id), status=200, mimetype='text/plain; charset=utf-8')
+
+    if request.method == 'DELETE':
+        if normalized.endswith('/'):
+            folder_id = resolve_folder_path_for_user(normalized, user_id)
+            if normalized != '/' and folder_id is None:
+                return fb_error('Not found', 404)
+            if folder_id is None:
+                return fb_error('Cannot delete root', 400)
+            delete_folder_tree(folder_id, user_id)
+            return Response('', status=200)
+
+        file_row = find_file_by_virtual_path(normalized, user_id)
+        if not file_row:
+            return fb_error('Not found', 404)
+        delete_file_record(file_row[0], user_id)
+        return Response('', status=200)
+
+    action = request.args.get('action', '')
+    destination = unquote(request.args.get('destination', ''))
+    if action == 'copy':
+        return fb_error('Copy unsupported', 400)
+    if action != 'rename' or not destination:
+        return fb_error('Unsupported action', 400)
+
+    destination = normalize_virtual_path(destination)
+    dest_parent_path, dest_name = split_virtual_path(destination)
+    dest_parent_id = resolve_folder_path_for_user(dest_parent_path, user_id)
+    if dest_parent_path and dest_parent_id is None:
+        return fb_error('Destination not found', 404)
+
+    if normalized.endswith('/'):
+        folder_id = resolve_folder_path_for_user(normalized, user_id)
+        if folder_id is None:
+            return fb_error('Not found', 404)
+        existing_dest = resolve_folder_path_for_user(destination, user_id)
+        if existing_dest is not None and existing_dest != folder_id:
+            return fb_error('Conflict', 409)
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE folders SET name = ?, parent_id = ? WHERE id = ? AND owner_id = ?", (dest_name, dest_parent_id, folder_id, user_id))
+        conn.commit()
+        conn.close()
+        return Response('', status=200)
+
+    file_row = find_file_by_virtual_path(normalized, user_id)
+    if not file_row:
+        return fb_error('Not found', 404)
+    existing_dest = find_file_by_virtual_path(destination, user_id)
+    if existing_dest and existing_dest[0] != file_row[0]:
+        return fb_error('Conflict', 409)
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE files SET file_name = ?, folder_id = ? WHERE id = ? AND owner_id = ?", (dest_name, dest_parent_id, file_row[0], user_id))
+    conn.commit()
+    conn.close()
+    return Response('', status=200)
+
+
+@app.route('/api/raw', methods=['GET'])
+@app.route('/api/raw/', methods=['GET'])
+@app.route('/api/raw/<path:resource_path>', methods=['GET'])
+def filebrowser_raw(resource_path=''):
+    user_row, error = require_api_auth()
+    if error:
+        return error
+    if request.args.get('files'):
+        return fb_error('Archive download is not supported yet', 400)
+
+    storage_row = fetch_file_storage_by_virtual_path(normalize_virtual_path(resource_path), user_row[0])
+    if not storage_row:
+        return fb_error('Not found', 404)
+
+    inline = (request.args.get('inline') or 'false').lower() == 'true'
+    return process_download(
+        storage_row[1],
+        storage_row[2].split(', ') if storage_row[2] else [],
+        storage_row[3].split(', ') if storage_row[3] else [],
+        storage_row[4],
+        file_id=storage_row[0],
+        as_attachment=not inline,
+    )
+
+
+@app.route('/api/usage', methods=['GET'])
+@app.route('/api/usage/', methods=['GET'])
+@app.route('/api/usage/<path:resource_path>', methods=['GET'])
+def filebrowser_usage(resource_path=''):
+    user_row, error = require_api_auth()
+    if error:
+        return error
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COALESCE(SUM(file_size), 0) FROM files WHERE owner_id = ?", (user_row[0],))
+    used = cursor.fetchone()[0] or 0
+    conn.close()
+    total = max(used, 1)
+    return fb_json({'used': used, 'total': total})
+
+
+@app.route('/api/users', methods=['GET'])
+def filebrowser_list_users():
+    user_row, error = require_api_auth()
+    if error:
+        return error
+    return fb_json([filebrowser_user_from_row(user_row)])
+
+
+@app.route('/api/users/<int:user_id>', methods=['GET', 'PUT', 'DELETE'])
+def filebrowser_update_user(user_id):
+    user_row, error = require_api_auth()
+    if error:
+        return error
+    if user_row[0] != user_id:
+        return fb_error('Forbidden', 403)
+
+    if request.method == 'GET':
+        return fb_json(filebrowser_user_from_row(user_row))
+
+    if request.method == 'DELETE':
+        return fb_error('Deleting users is unsupported', 403)
+
+    payload = request.get_json(silent=True) or {}
+    data = payload.get('data') or {}
+    which = payload.get('which') or []
+    current_password = payload.get('current_password') or ''
+
+    if 'password' in which and data.get('password'):
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        cursor.execute("SELECT password FROM users WHERE id = ?", (user_id,))
+        current_row = cursor.fetchone()
+        if not current_row or not check_password_hash(current_row[0], current_password):
+            conn.close()
+            return fb_error('Wrong credentials', 403)
+        cursor.execute("UPDATE users SET password = ? WHERE id = ?", (generate_password_hash(data['password']), user_id))
+        conn.commit()
+        conn.close()
+
+    prefs = get_user_preferences(user_id)
+    for key in ('viewMode', 'sorting', 'locale', 'dateFormat', 'singleClick', 'hideDotfiles', 'redirectAfterCopyMove', 'aceEditorTheme'):
+        if key in data:
+            prefs[key] = data[key]
+    USER_PREFERENCES[user_id] = prefs
+    return Response('', status=200)
+
+
+@app.route('/api/search/', methods=['GET'])
+@app.route('/api/search/<path:base_path>', methods=['GET'])
+def filebrowser_search(base_path=''):
+    user_row, error = require_api_auth()
+    if error:
+        return error
+    query = (request.args.get('query') or '').strip().lower()
+    if not query:
+        return Response('', status=200, mimetype='application/x-ndjson')
+
+    base_folder_id = resolve_folder_path_for_user(base_path, user_row[0])
+    if base_path and base_folder_id is None:
+        return fb_error('Not found', 404)
+
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    results = []
+
+    def walk(folder_id):
+        cursor.execute("SELECT id, name FROM folders WHERE parent_id IS ? AND owner_id = ?", (folder_id, user_row[0]))
+        folder_rows = cursor.fetchall()
+        current_parent = folder_path_from_id(folder_id, user_row[0])
+        for row in folder_rows:
+            item = serialize_fb_item(row, current_parent, True)
+            if query in row[1].lower():
+                results.append(item)
+            walk(row[0])
+
+        cursor.execute("SELECT id, file_name, file_size, upload_date FROM files WHERE folder_id IS ? AND owner_id = ?", (folder_id, user_row[0]))
+        for row in cursor.fetchall():
+            item = serialize_fb_item(row, current_parent, False)
+            if query in row[1].lower():
+                results.append(item)
+
+    walk(base_folder_id)
+    conn.close()
+    return Response('\n'.join(json.dumps(item, ensure_ascii=False) for item in results), status=200, mimetype='application/x-ndjson')
 
 
 @app.route('/api/folders', methods=['POST'])
@@ -650,6 +1446,14 @@ def frontend_assets(filename):
     assets_dir = os.path.join(FRONTEND_DIST, 'assets')
     if os.path.exists(os.path.join(assets_dir, filename)):
         return send_from_directory(assets_dir, filename)
+    return "Not Found", 404
+
+
+@app.route('/img/<path:filename>')
+def frontend_public_images(filename):
+    img_dir = os.path.join(FRONTEND_DIST, 'img')
+    if os.path.exists(os.path.join(img_dir, filename)):
+        return send_from_directory(img_dir, filename)
     return "Not Found", 404
 
 
@@ -1235,7 +2039,7 @@ def get_fresh_telegram_urls(telegram_file_ids):
     return refreshed_urls
 
 
-def process_download(file_name, chunks_urls, message_ids, key_hex, file_id=None):
+def prepare_decrypted_file(file_name, chunks_urls, key_hex):
     os.makedirs(TEMP_CHUNKS, exist_ok=True)
     os.makedirs(TEMP_DOWNLOAD, exist_ok=True)
 
@@ -1246,12 +2050,27 @@ def process_download(file_name, chunks_urls, message_ids, key_hex, file_id=None)
             local_chunk_paths = refreshed_urls
         else:
             log_message("Failed to resolve dynamic telegram links.")
-            return "Failed to resolve file paths from Telegram API", 404
+            raise FileNotFoundError("Failed to resolve file paths from Telegram API")
+    else:
+        raise FileNotFoundError("No Telegram chunks available")
 
+    decrypt_and_reassemble(local_chunk_paths, file_name, key_hex)
+    return os.path.join(os.getcwd(), TEMP_DOWNLOAD, file_name)
+
+
+def read_decrypted_content(file_name, chunks_urls, key_hex):
+    decrypted_file_path = prepare_decrypted_file(file_name, chunks_urls, key_hex)
     try:
-        # local_chunk_paths contains absolute file paths mounted natively through docker volumes
-        decrypt_and_reassemble(local_chunk_paths, file_name, key_hex)
-        decrypted_file_path = os.path.join(os.getcwd(), TEMP_DOWNLOAD, file_name)
+        with open(decrypted_file_path, 'rb') as source:
+            return source.read()
+    finally:
+        shutil.rmtree(TEMP_DOWNLOAD, ignore_errors=True)
+        os.makedirs(TEMP_DOWNLOAD, exist_ok=True)
+
+
+def process_download(file_name, chunks_urls, message_ids, key_hex, file_id=None, as_attachment=True):
+    try:
+        decrypted_file_path = prepare_decrypted_file(file_name, chunks_urls, key_hex)
 
         @after_this_request
         def cleanup(response):
@@ -1259,7 +2078,11 @@ def process_download(file_name, chunks_urls, message_ids, key_hex, file_id=None)
             os.makedirs(TEMP_DOWNLOAD, exist_ok=True)
             return response
 
-        return send_file(decrypted_file_path, as_attachment=True)
+        return send_file(
+            decrypted_file_path,
+            as_attachment=as_attachment,
+            download_name=file_name,
+        )
 
     except Exception as e:
         log_message(f"Decryption error: {e}")
@@ -1285,8 +2108,9 @@ def download_and_decrypt(file_id):
     file_name, chunk_list, message_ids_str, key_hex, owner_id = result
     chunks_urls = chunk_list.split(', ') if chunk_list else []
     message_ids = message_ids_str.split(', ') if message_ids_str else []
+    inline = (request.args.get('inline') or 'false').lower() == 'true'
 
-    return process_download(file_name, chunks_urls, message_ids, key_hex, file_id=file_id)
+    return process_download(file_name, chunks_urls, message_ids, key_hex, file_id=file_id, as_attachment=not inline)
 
 
 @app.route('/s/<token>', methods=['GET'])

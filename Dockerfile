@@ -1,10 +1,12 @@
-FROM node:20-bookworm-slim AS frontend-build
+FROM node:24-bookworm-slim AS frontend-build
 
 WORKDIR /frontend
-COPY frontend/package.json frontend/tsconfig.json frontend/vite.config.ts frontend/index.html ./
+RUN corepack enable
+COPY frontend/package.json frontend/pnpm-lock.yaml frontend/index.html frontend/env.d.ts frontend/postcss.config.cjs frontend/tsconfig.json frontend/tsconfig.app.json frontend/tsconfig.node.json frontend/vite.config.ts ./
+COPY frontend/public ./public
 COPY frontend/src ./src
-RUN npm install
-RUN npm run build
+RUN pnpm install --frozen-lockfile
+RUN pnpm run build
 
 FROM python:3.11-slim
 
