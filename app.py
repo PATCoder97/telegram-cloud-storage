@@ -53,7 +53,7 @@ def frontend_bootstrap_config():
         'DisableExternal': True,
         'DisableUsedPercentage': True,
         'Theme': 'dark',
-        'Version': 'v1.2.8',
+        'Version': 'v1.2.9',
         'Signup': False,
         'ReCaptcha': False,
         'ReCaptchaKey': '',
@@ -1169,6 +1169,10 @@ def filebrowser_resources(resource_path=''):
 @app.route('/api/raw/', methods=['GET'])
 @app.route('/api/raw/<path:resource_path>', methods=['GET'])
 @app.route('/api/raw<path:resource_path>', methods=['GET'])
+@app.route('/raw', methods=['GET'])
+@app.route('/raw/', methods=['GET'])
+@app.route('/raw/<path:resource_path>', methods=['GET'])
+@app.route('/raw<path:resource_path>', methods=['GET'])
 def filebrowser_raw(resource_path=''):
     user_row, error = require_api_auth()
     if error:
@@ -1195,6 +1199,10 @@ def filebrowser_raw(resource_path=''):
 @app.route('/api/usage/', methods=['GET'])
 @app.route('/api/usage/<path:resource_path>', methods=['GET'])
 @app.route('/api/usage<path:resource_path>', methods=['GET'])
+@app.route('/usage', methods=['GET'])
+@app.route('/usage/', methods=['GET'])
+@app.route('/usage/<path:resource_path>', methods=['GET'])
+@app.route('/usage<path:resource_path>', methods=['GET'])
 def filebrowser_usage(resource_path=''):
     user_row, error = require_api_auth()
     if error:
@@ -1209,6 +1217,7 @@ def filebrowser_usage(resource_path=''):
 
 
 @app.route('/api/resources/folder-path', methods=['POST'])
+@app.route('/resources/folder-path', methods=['POST'])
 def filebrowser_create_folder_by_path():
     user_row, error = require_api_auth()
     if error:
@@ -1231,6 +1240,7 @@ def filebrowser_create_folder_by_path():
 
 
 @app.route('/api/resources/file-path', methods=['POST'])
+@app.route('/resources/file-path', methods=['POST'])
 def filebrowser_upload_file_by_path():
     user_row, error = require_api_auth()
     if error:
@@ -1263,6 +1273,54 @@ def filebrowser_upload_file_by_path():
     adapted_file = UploadedFileAdapter(upload_file, file_name)
     file_id, _job_id = queue_upload_for_user(adapted_file, folder_id, user_row[0])
     return Response(str(file_id), status=200, mimetype='text/plain; charset=utf-8')
+
+
+@app.route('/resources', methods=['GET', 'POST'])
+@app.route('/resources/', methods=['GET', 'POST'])
+@app.route('/resources/<path:resource_path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH'])
+@app.route('/resources/<path:resource_path>/', methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH'])
+@app.route('/resources<path:resource_path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH'])
+def filebrowser_resources_alias(resource_path=''):
+    return filebrowser_resources(resource_path)
+
+
+def _resource_suffix_from_path(prefix):
+    suffix = request.path[len(prefix):]
+    return suffix.lstrip('/')
+
+
+def _matches_api_prefix(prefix):
+    path = request.path or ''
+    return path == prefix or path.startswith(prefix + '/')
+
+
+@app.errorhandler(404)
+def api_route_fallback(error):
+    if _matches_api_prefix('/api/resources/file-path') or _matches_api_prefix('/resources/file-path'):
+        return filebrowser_upload_file_by_path()
+
+    if _matches_api_prefix('/api/resources/folder-path') or _matches_api_prefix('/resources/folder-path'):
+        return filebrowser_create_folder_by_path()
+
+    if _matches_api_prefix('/api/resources'):
+        return filebrowser_resources(_resource_suffix_from_path('/api/resources'))
+
+    if _matches_api_prefix('/resources'):
+        return filebrowser_resources(_resource_suffix_from_path('/resources'))
+
+    if _matches_api_prefix('/api/raw'):
+        return filebrowser_raw(_resource_suffix_from_path('/api/raw'))
+
+    if _matches_api_prefix('/raw'):
+        return filebrowser_raw(_resource_suffix_from_path('/raw'))
+
+    if _matches_api_prefix('/api/usage'):
+        return filebrowser_usage(_resource_suffix_from_path('/api/usage'))
+
+    if _matches_api_prefix('/usage'):
+        return filebrowser_usage(_resource_suffix_from_path('/usage'))
+
+    return Response('Not Found', status=404, mimetype='text/plain; charset=utf-8')
 
 
 @app.route('/api/users', methods=['GET'])
