@@ -53,7 +53,7 @@ def frontend_bootstrap_config():
         'DisableExternal': True,
         'DisableUsedPercentage': True,
         'Theme': 'dark',
-        'Version': 'v1.2.9',
+        'Version': 'v1.2.10',
         'Signup': False,
         'ReCaptcha': False,
         'ReCaptchaKey': '',
@@ -100,7 +100,11 @@ def unauthorized_handler():
 def frontend_config_js():
     config = json.dumps(frontend_bootstrap_config())
     script = f"window.FileBrowser = {config};"
-    return Response(script, mimetype='application/javascript')
+    response = Response(script, mimetype='application/javascript')
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
 
 
 class User(UserMixin):

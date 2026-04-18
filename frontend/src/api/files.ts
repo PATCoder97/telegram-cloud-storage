@@ -2,6 +2,7 @@ import { useAuthStore } from "@/stores/auth";
 import { useLayoutStore } from "@/stores/layout";
 import { joinBaseURL } from "@/utils/constants";
 import { upload as postTus, useTus } from "./tus";
+import { shouldFallbackFromTus } from "./uploadFallback";
 import { createURL, fetchURL, removePrefix, StatusError } from "./utils";
 import { isEncodableResponse, makeRawResource } from "@/utils/encodings";
 
@@ -109,7 +110,19 @@ export async function post(
 
   if (content instanceof Blob) {
     if (await useTus(content)) {
-      return postTus(url, content, overwrite, onupload);
+      try {
+        return await postTus(url, content, overwrite, onupload);
+      } catch (error) {
+        if (shouldFallbackFromTus(error)) {
+          console.warn(
+            "Tus endpoint unavailable, falling back to direct upload",
+            error
+          );
+          return postFilePath(url, content, overwrite, onupload);
+        }
+
+        throw error;
+      }
     }
 
     return postFilePath(url, content, overwrite, onupload);

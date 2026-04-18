@@ -2,10 +2,12 @@ import * as tus from "tus-js-client";
 import { joinBaseURL, tusEndpoint, tusSettings, origin } from "@/utils/constants";
 import { useAuthStore } from "@/stores/auth";
 import { removePrefix } from "@/api/utils";
+import { shouldFallbackFromTus } from "./uploadFallback";
 
 const RETRY_BASE_DELAY = 1000;
 const RETRY_MAX_DELAY = 20000;
 const CURRENT_UPLOAD_LIST: { [key: string]: tus.Upload } = {};
+type TusUploadError = Error & { status?: number };
 
 export async function upload(
   filePath: string,
@@ -42,8 +44,8 @@ export async function upload(
           ? err.originalResponse.getStatus()
           : 0;
 
-        // Do not retry for file conflict.
-        if (status === 409) {
+        // Fail fast for known non-retryable server responses.
+        if (status === 409 || shouldFallbackFromTus({ status })) {
           return false;
         }
 
@@ -56,16 +58,23 @@ export async function upload(
           return reject(error);
         }
 
+        const status =
+          error instanceof tus.DetailedError && error.originalResponse !== null
+            ? error.originalResponse.getStatus()
+            : 0;
         const message =
           error instanceof tus.DetailedError
             ? error.originalResponse === null
               ? "000 No connection"
               : error.originalResponse.getBody()
             : "Upload failed";
+        const uploadError = new Error(message) as TusUploadError;
+        uploadError.name = "TusUploadError";
+        uploadError.status = status;
 
         console.error(error);
 
-        reject(new Error(message));
+        reject(uploadError);
       },
       onProgress: function (bytesUploaded) {
         if (typeof onupload === "function") {
