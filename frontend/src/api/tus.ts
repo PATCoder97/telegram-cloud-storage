@@ -1,5 +1,5 @@
 import * as tus from "tus-js-client";
-import { baseURL, tusEndpoint, tusSettings, origin } from "@/utils/constants";
+import { joinBaseURL, tusEndpoint, tusSettings, origin } from "@/utils/constants";
 import { useAuthStore } from "@/stores/auth";
 import { removePrefix } from "@/api/utils";
 
@@ -29,7 +29,7 @@ export async function upload(
   }
   return new Promise<void | string>((resolve, reject) => {
     const upload = new tus.Upload(content, {
-      endpoint: `${origin}${baseURL}${resourcePath}`,
+      endpoint: new URL(joinBaseURL(resourcePath), origin).toString(),
       chunkSize: tusSettings.chunkSize,
       retryDelays: computeRetryDelays(tusSettings),
       parallelUploads: 1,

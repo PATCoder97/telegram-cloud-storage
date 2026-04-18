@@ -1,6 +1,6 @@
 import { useAuthStore } from "@/stores/auth";
 import { renew, logout } from "@/utils/auth";
-import { baseURL } from "@/utils/constants";
+import { joinBaseURL } from "@/utils/constants";
 import { encodePath } from "@/utils/url";
 
 export class StatusError extends Error {
@@ -27,7 +27,7 @@ export async function fetchURL(
   const { headers, ...rest } = opts;
   let res;
   try {
-    res = await fetch(`${baseURL}${url}`, {
+    res = await fetch(joinBaseURL(url), {
       headers: {
         "X-Auth": authStore.jwt,
         ...headers,
@@ -82,11 +82,7 @@ export function removePrefix(url: string): string {
 }
 
 export function createURL(endpoint: string, searchParams = {}): string {
-  let prefix = baseURL;
-  if (!prefix.endsWith("/")) {
-    prefix = prefix + "/";
-  }
-  const url = new URL(prefix + encodePath(endpoint), origin);
+  const url = new URL(joinBaseURL(encodePath(endpoint)), origin);
   url.search = new URLSearchParams(searchParams).toString();
 
   return url.toString();

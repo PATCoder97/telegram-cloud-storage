@@ -1,5 +1,5 @@
 import { fetchURL, removePrefix, createURL } from "./utils";
-import { baseURL } from "@/utils/constants";
+import { joinBaseURL } from "@/utils/constants";
 
 export async function fetch(url: string, password: string = "") {
   url = removePrefix(url);
@@ -38,7 +38,7 @@ export function download(
   token: string,
   ...files: string[]
 ) {
-  let url = `${baseURL}/api/public/dl/${hash}`;
+  let url = joinBaseURL(`/api/public/dl/${hash}`);
 
   if (files.length === 1) {
     url += files[0] + "?";

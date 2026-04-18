@@ -2,9 +2,13 @@ import { useAuthStore } from "@/stores/auth";
 import router from "@/router";
 import type { JwtPayload } from "jwt-decode";
 import { jwtDecode } from "jwt-decode";
-import { authMethod, baseURL, noAuth, logoutPage } from "./constants";
+import { authMethod, joinBaseURL, noAuth, logoutPage } from "./constants";
 import { StatusError } from "@/api/utils";
 import { setSafeTimeout } from "@/api/utils";
+
+function authURL(path: string) {
+  return joinBaseURL(path);
+}
 
 export function parseToken(token: string) {
   // falsy or malformed jwt will throw InvalidTokenError
@@ -55,18 +59,27 @@ export async function login(
 ) {
   const data = { username, password, recaptcha };
 
-  const res = await fetch(`${baseURL}/api/login`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(data),
-  });
+  let res: Response;
+  try {
+    res = await fetch(authURL("/api/login"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(data),
+    });
+  } catch (error) {
+    throw new StatusError("000 No connection", 0);
+  }
 
   const body = await res.text();
 
   if (res.status === 200) {
-    parseToken(body);
+    try {
+      parseToken(body);
+    } catch (error) {
+      throw new StatusError("Invalid auth token", 500);
+    }
   } else {
     throw new StatusError(
       body || `${res.status} ${res.statusText}`,
@@ -76,17 +89,26 @@ export async function login(
 }
 
 export async function renew(jwt: string) {
-  const res = await fetch(`${baseURL}/api/renew`, {
-    method: "POST",
-    headers: {
-      "X-Auth": jwt,
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(authURL("/api/renew"), {
+      method: "POST",
+      headers: {
+        "X-Auth": jwt,
+      },
+    });
+  } catch (error) {
+    throw new StatusError("000 No connection", 0);
+  }
 
   const body = await res.text();
 
   if (res.status === 200) {
-    parseToken(body);
+    try {
+      parseToken(body);
+    } catch (error) {
+      throw new StatusError("Invalid auth token", 500);
+    }
   } else {
     throw new StatusError(
       body || `${res.status} ${res.statusText}`,
@@ -98,13 +120,18 @@ export async function renew(jwt: string) {
 export async function signup(username: string, password: string) {
   const data = { username, password };
 
-  const res = await fetch(`${baseURL}/api/signup`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(data),
-  });
+  let res: Response;
+  try {
+    res = await fetch(authURL("/api/signup"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(data),
+    });
+  } catch (error) {
+    throw new StatusError("000 No connection", 0);
+  }
 
   if (res.status !== 200) {
     const body = await res.text();

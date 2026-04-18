@@ -1,4 +1,4 @@
-import { baseURL } from "@/utils/constants";
+import { joinBaseURL } from "@/utils/constants";
 import { removePrefix } from "./utils";
 
 const ssl = window.location.protocol === "https:";
@@ -11,7 +11,7 @@ export default function command(
   onclose: WebSocket["onclose"]
 ) {
   url = removePrefix(url);
-  url = `${protocol}//${window.location.host}${baseURL}/api/command${url}`;
+  url = `${protocol}//${window.location.host}${joinBaseURL(`/api/command${url}`)}`;
 
   const conn = new window.WebSocket(url);
   conn.onopen = () => conn.send(command);

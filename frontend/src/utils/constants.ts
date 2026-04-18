@@ -1,8 +1,36 @@
+function normalizeBasePath(value: unknown): string {
+  if (typeof value !== "string") return "";
+
+  const raw = value.trim();
+  if (raw === "" || raw === "/") return "";
+
+  const trimmed = raw.replace(/^\/+|\/+$/g, "");
+  return trimmed ? `/${trimmed}` : "";
+}
+
+function normalizeStaticPath(value: unknown): string {
+  if (typeof value !== "string") return "";
+
+  const raw = value.trim();
+  if (raw === "" || raw === "/") return "";
+
+  return raw.replace(/\/+$/, "");
+}
+
+function normalizeAppPath(path: unknown): string {
+  if (typeof path !== "string") return "";
+
+  const raw = path.trim();
+  if (raw === "") return "";
+
+  return raw.startsWith("/") ? raw : `/${raw}`;
+}
+
 const name: string = window.FileBrowser.Name || "File Browser";
 const disableExternal: boolean = window.FileBrowser.DisableExternal;
 const disableUsedPercentage: boolean = window.FileBrowser.DisableUsedPercentage;
-const baseURL: string = window.FileBrowser.BaseURL;
-const staticURL: string = window.FileBrowser.StaticURL;
+const baseURL: string = normalizeBasePath(window.FileBrowser.BaseURL);
+const staticURL: string = normalizeStaticPath(window.FileBrowser.StaticURL);
 const recaptcha: string = window.FileBrowser.ReCaptcha;
 const recaptchaKey: string = window.FileBrowser.ReCaptchaKey;
 const signup: boolean = window.FileBrowser.Signup;
@@ -21,11 +49,16 @@ const origin = window.location.origin;
 const tusEndpoint = `/api/tus`;
 const hideLoginButton = window.FileBrowser.HideLoginButton;
 
+function joinBaseURL(path: string): string {
+  return `${baseURL}${normalizeAppPath(path)}`;
+}
+
 export {
   name,
   disableExternal,
   disableUsedPercentage,
   baseURL,
+  joinBaseURL,
   logoURL,
   recaptcha,
   recaptchaKey,

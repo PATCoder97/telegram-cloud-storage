@@ -106,12 +106,13 @@ const submit = async (event: Event) => {
     await auth.login(username.value, password.value, captcha);
     router.push({ path: redirect });
   } catch (e: any) {
-    // console.error(e);
     if (e instanceof StatusError) {
       if (e.status === 409) {
         error.value = t("login.usernameTaken");
       } else if (e.status === 403) {
         error.value = t("login.wrongCredentials");
+      } else if (e.status === 0) {
+        error.value = "Không kết nối được tới máy chủ";
       } else if (e.status === 400) {
         const match = e.message.match(/minimum length is (\d+)/);
         if (match) {
@@ -122,6 +123,11 @@ const submit = async (event: Event) => {
       } else {
         $showError(e);
       }
+    } else if (e instanceof Error) {
+      error.value = e.message || "Đăng nhập thất bại";
+      $showError(e);
+    } else {
+      error.value = "Đăng nhập thất bại";
     }
   }
 };

@@ -1,6 +1,6 @@
 import { useAuthStore } from "@/stores/auth";
 import { useLayoutStore } from "@/stores/layout";
-import { baseURL } from "@/utils/constants";
+import { joinBaseURL } from "@/utils/constants";
 import { upload as postTus, useTus } from "./tus";
 import { createURL, fetchURL, removePrefix, StatusError } from "./utils";
 import { isEncodableResponse, makeRawResource } from "@/utils/encodings";
@@ -74,7 +74,7 @@ export async function put(url: string, content = "") {
 }
 
 export function download(format: any, ...files: string[]) {
-  let url = `${baseURL}/api/raw`;
+  let url = joinBaseURL("/api/raw");
 
   if (files.length === 1) {
     url += removePrefix(files[0]) + "?";
@@ -138,7 +138,7 @@ async function postResources(
     const request = new XMLHttpRequest();
     request.open(
       "POST",
-      `${baseURL}/api/resources${url}?override=${overwrite}`,
+      joinBaseURL(`/api/resources${url}?override=${overwrite}`),
       true
     );
     request.setRequestHeader("X-Auth", authStore.jwt);

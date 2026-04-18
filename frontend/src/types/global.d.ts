@@ -4,6 +4,7 @@ declare global {
   interface Window {
     FileBrowser: any;
     grecaptcha: any;
+    __prependStaticUrl?: (url: string) => string;
   }
 
   interface HTMLElement {
