@@ -30,6 +30,7 @@ export type FileItem = {
 export type BrowseResponse = {
   folder_id: number | null;
   current_folder_name: string;
+  current_path: string;
   parent_folder_id: number | null;
   breadcrumbs: Breadcrumb[];
   folders: Folder[];

@@ -30,6 +30,10 @@ input {
   font: inherit;
 }
 
+button {
+  outline: none;
+}
+
 #app {
   min-height: 100vh;
 }
@@ -48,6 +52,10 @@ input {
 .login-card {
   width: min(420px, calc(100vw - 32px));
   text-align: center;
+}
+
+#login form {
+  display: block;
 }
 
 .brand-mark {
@@ -74,30 +82,27 @@ input {
   color: var(--muted);
 }
 
-.login-form {
-  display: grid;
-  gap: 12px;
-}
-
-.login-form input {
+.input,
+.button {
   width: 100%;
   padding: 14px 16px;
   border: 1px solid var(--line);
   background: transparent;
   color: var(--text);
+  margin-bottom: 12px;
 }
 
-.login-form button {
-  padding: 14px 16px;
+.button {
   border: 0;
   background: var(--blue);
   color: white;
   cursor: pointer;
 }
 
-.form-error {
+.wrong {
   color: #ff9aa4;
-  margin-top: 12px;
+  margin: 0 0 12px;
+  text-align: left;
 }
 
 .browser-shell {
@@ -141,6 +146,17 @@ input {
   font-size: 0.92rem;
 }
 
+.sidebar-brand-copy {
+  min-width: 0;
+}
+
+.sidebar-brand-copy strong {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .sidebar-nav,
 .sidebar-footer {
   padding: 14px 0;
@@ -175,9 +191,24 @@ input {
   color: var(--muted);
 }
 
+.material-symbol {
+  display: inline-flex;
+  min-width: 18px;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 0.95rem;
+  line-height: 1;
+  text-transform: lowercase;
+}
+
 .workspace {
   display: flex;
   flex-direction: column;
+}
+
+.content-wrap {
+  padding: 14px 18px 28px;
 }
 
 .topbar {
@@ -227,10 +258,6 @@ input {
   background: rgba(255, 255, 255, 0.05);
 }
 
-.content {
-  padding: 14px 18px 28px;
-}
-
 .breadcrumbs {
   display: flex;
   align-items: center;
@@ -247,10 +274,19 @@ input {
   cursor: pointer;
 }
 
-.crumb:not(:last-child)::after {
-  content: ">";
-  margin-left: 8px;
-  color: #7b848c;
+.crumb-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chevron {
+  display: inline-flex;
+  align-items: center;
+}
+
+.crumb.home {
+  padding-left: 0;
 }
 
 .upload-banner {

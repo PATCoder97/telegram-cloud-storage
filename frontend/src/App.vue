@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import LayoutView from "./views/LayoutView.vue";
+import LoginView from "./views/LoginView.vue";
 import type { BrowseResponse, FileItem, Folder, User } from "./types";
 
 type ApiEnvelope<T> = T & { ok: boolean; message?: string };
+type FileBrowserConfig = { Name?: string };
 
 const sessionChecked = ref(false);
 const authenticated = ref(false);
@@ -10,20 +13,26 @@ const user = ref<User | null>(null);
 const browse = ref<BrowseResponse | null>(null);
 const search = ref("");
 const statusText = ref("");
-const loginForm = ref({ username: "admin", password: "admin" });
+const loginUsername = ref("admin");
+const loginPassword = ref("admin");
 const loginError = ref("");
 const loading = ref(false);
 const uploadPercent = ref(0);
 const uploadingName = ref("");
+const appName = ((window as any).FileBrowser as FileBrowserConfig | undefined)?.Name || "File Browser";
 let refreshTimer: number | null = null;
 
-function currentFolderId(): number | null {
-  const match = window.location.pathname.match(/^\/folder\/(\d+)/);
-  return match ? Number(match[1]) : null;
+function currentFolderPath(): string {
+  const pathname = window.location.pathname;
+  if (pathname === "/" || pathname === "/files" || pathname === "/files/") return "";
+  if (pathname.startsWith("/files/")) {
+    return decodeURIComponent(pathname.replace(/^\/files\//, "").replace(/\/+$/, ""));
+  }
+  return "";
 }
 
-function updateUrl(folderId: number | null) {
-  const nextUrl = folderId ? `/folder/${folderId}` : "/";
+function updateUrl(folderPath: string) {
+  const nextUrl = folderPath ? `/files/${encodeURI(folderPath)}` : "/files/";
   if (window.location.pathname !== nextUrl) {
     window.history.pushState({}, "", nextUrl);
   }
@@ -51,9 +60,9 @@ async function loadSession() {
     authenticated.value = data.authenticated;
     user.value = data.user || null;
     if (authenticated.value) {
-      await loadBrowse(currentFolderId(), false);
-      if (window.location.pathname === "/login") {
-        window.history.replaceState({}, "", "/");
+      await loadBrowse(currentFolderPath(), false);
+      if (window.location.pathname === "/login" || window.location.pathname === "/") {
+        window.history.replaceState({}, "", "/files/");
       }
     } else if (window.location.pathname !== "/login") {
       window.history.replaceState({}, "", "/login");
@@ -65,13 +74,14 @@ async function loadSession() {
   }
 }
 
-async function loadBrowse(folderId: number | null, replaceUrl = true) {
+async function loadBrowse(folderPath = "", replaceUrl = true) {
   if (!authenticated.value) return;
-  const url = folderId ? `/api/browse/${folderId}` : "/api/browse";
+  const normalizedPath = folderPath.replace(/^\/+|\/+$/g, "");
+  const url = normalizedPath ? `/api/browse-path/${encodeURI(normalizedPath)}` : "/api/browse-path";
   const data = await api<BrowseResponse>(url);
   browse.value = data;
   if (replaceUrl) {
-    updateUrl(folderId);
+    updateUrl(data.current_path || "");
   }
   syncAutoRefresh();
 }
@@ -82,12 +92,12 @@ async function submitLogin() {
   try {
     const data = await api<{ authenticated: boolean; user: User }>("/api/session", {
       method: "POST",
-      body: JSON.stringify(loginForm.value)
+      body: JSON.stringify({ username: loginUsername.value, password: loginPassword.value })
     });
     authenticated.value = data.authenticated;
     user.value = data.user;
-    await loadBrowse(currentFolderId(), false);
-    window.history.replaceState({}, "", "/");
+    await loadBrowse(currentFolderPath(), false);
+    window.history.replaceState({}, "", "/files/");
   } catch (error) {
     loginError.value = (error as Error).message;
   } finally {
@@ -111,7 +121,7 @@ async function createFolder() {
     method: "POST",
     body: JSON.stringify({ name, parent_id: browse.value?.folder_id ?? null })
   });
-  await loadBrowse(browse.value?.folder_id ?? null, false);
+  await loadBrowse(browse.value?.current_path || "", false);
 }
 
 async function renameFolder(folder: Folder) {
@@ -121,13 +131,13 @@ async function renameFolder(folder: Folder) {
     method: "PATCH",
     body: JSON.stringify({ name })
   });
-  await loadBrowse(browse.value?.folder_id ?? null, false);
+  await loadBrowse(browse.value?.current_path || "", false);
 }
 
 async function deleteFolder(folder: Folder) {
   if (!window.confirm(`Delete folder "${folder.name}" and move files to root?`)) return;
   await api(`/api/folders/${folder.id}`, { method: "DELETE" });
-  await loadBrowse(browse.value?.folder_id ?? null, false);
+  await loadBrowse(browse.value?.current_path || "", false);
 }
 
 async function moveFile(file: FileItem) {
@@ -139,12 +149,12 @@ async function moveFile(file: FileItem) {
     method: "POST",
     body: JSON.stringify({ target_folder_id: choice })
   });
-  await loadBrowse(browse.value?.folder_id ?? null, false);
+  await loadBrowse(browse.value?.current_path || "", false);
 }
 
 async function togglePublicLink(file: FileItem) {
   const data = await api<{ public_url: string | null }>(`/api/files/${file.id}/public-link`, { method: "POST" });
-  await loadBrowse(browse.value?.folder_id ?? null, false);
+  await loadBrowse(browse.value?.current_path || "", false);
   if (data.public_url) {
     window.prompt("Public link", data.public_url);
   }
@@ -152,18 +162,18 @@ async function togglePublicLink(file: FileItem) {
 
 async function retryFile(file: FileItem) {
   await api(`/api/files/${file.id}/retry`, { method: "POST" });
-  await loadBrowse(browse.value?.folder_id ?? null, false);
+  await loadBrowse(browse.value?.current_path || "", false);
 }
 
 async function stopFile(file: FileItem) {
   await api(`/api/files/${file.id}/stop`, { method: "POST" });
-  await loadBrowse(browse.value?.folder_id ?? null, false);
+  await loadBrowse(browse.value?.current_path || "", false);
 }
 
 async function deleteFile(file: FileItem) {
   if (!window.confirm(`Delete "${file.file_name}"?`)) return;
   await api(`/api/files/${file.id}`, { method: "DELETE" });
-  await loadBrowse(browse.value?.folder_id ?? null, false);
+  await loadBrowse(browse.value?.current_path || "", false);
 }
 
 function downloadFile(file: FileItem) {
@@ -183,9 +193,7 @@ function uploadFiles(files: FileList | null) {
 function handleFileInputChange(event: Event) {
   const target = event.target as HTMLInputElement | null;
   uploadFiles(target?.files || null);
-  if (target) {
-    target.value = "";
-  }
+  if (target) target.value = "";
 }
 
 function uploadFile(file: File) {
@@ -206,7 +214,7 @@ function uploadFile(file: File) {
   xhr.onload = async () => {
     if (xhr.status >= 200 && xhr.status < 300) {
       statusText.value = "Uploaded. Processing in background...";
-      await loadBrowse(browse.value?.folder_id ?? null, false);
+      await loadBrowse(browse.value?.current_path || "", false);
       syncAutoRefresh();
       window.setTimeout(() => {
         statusText.value = "";
@@ -229,19 +237,6 @@ function displayTime(file: FileItem) {
   return file.formatted_size;
 }
 
-function isFolderVisible(folder: Folder) {
-  return folder.name.toLowerCase().includes(search.value.toLowerCase());
-}
-
-function isFileVisible(file: FileItem) {
-  const term = search.value.toLowerCase();
-  return file.file_name.toLowerCase().includes(term);
-}
-
-function folderIcon() {
-  return "folder";
-}
-
 function fileIcon(file: FileItem) {
   if (file.status === "Processing") return "spinner";
   if (file.status === "Error") return "error";
@@ -252,8 +247,17 @@ function fileIcon(file: FileItem) {
   return "file";
 }
 
-const visibleFolders = computed(() => (browse.value?.folders || []).filter(isFolderVisible));
-const visibleFiles = computed(() => (browse.value?.files || []).filter(isFileVisible));
+function childPath(folder: Folder) {
+  return browse.value?.current_path ? `${browse.value.current_path}/${folder.name}` : folder.name;
+}
+
+function parentPath() {
+  const crumbs = (browse.value?.breadcrumbs || []).filter((crumb) => crumb.id !== null);
+  return crumbs.slice(0, -1).map((crumb) => crumb.name).join("/");
+}
+
+const visibleFolders = computed(() => (browse.value?.folders || []).filter((folder) => folder.name.toLowerCase().includes(search.value.toLowerCase())));
+const visibleFiles = computed(() => (browse.value?.files || []).filter((file) => file.file_name.toLowerCase().includes(search.value.toLowerCase())));
 const activeProcessing = computed(() => (browse.value?.files || []).some((file) => file.status === "Processing"));
 
 function stopAutoRefresh() {
@@ -267,166 +271,75 @@ function syncAutoRefresh() {
   stopAutoRefresh();
   if (activeProcessing.value) {
     refreshTimer = window.setTimeout(() => {
-      loadBrowse(browse.value?.folder_id ?? null, false).catch(() => undefined);
+      loadBrowse(browse.value?.current_path || "", false).catch(() => undefined);
     }, 5000);
   }
 }
 
 watch(activeProcessing, () => syncAutoRefresh());
 
-window.addEventListener("popstate", () => {
+const handlePopState = () => {
   if (authenticated.value) {
-    loadBrowse(currentFolderId(), false).catch(() => undefined);
+    loadBrowse(currentFolderPath(), false).catch(() => undefined);
   }
+};
+
+onMounted(() => {
+  window.addEventListener("popstate", handlePopState);
+  loadSession();
 });
 
-onMounted(loadSession);
-onBeforeUnmount(stopAutoRefresh);
+onBeforeUnmount(() => {
+  stopAutoRefresh();
+  window.removeEventListener("popstate", handlePopState);
+});
 </script>
 
 <template>
   <div v-if="sessionChecked" class="shell">
-    <section v-if="!authenticated" class="login-screen">
-      <div class="login-card">
-        <div class="brand-mark">FB</div>
-        <h1>File Browser</h1>
-        <p>Telegram-backed storage with a File Browser style shell</p>
-        <form class="login-form" @submit.prevent="submitLogin">
-          <input v-model="loginForm.username" type="text" placeholder="Username" autocomplete="username" />
-          <input v-model="loginForm.password" type="password" placeholder="Password" autocomplete="current-password" />
-          <button :disabled="loading" type="submit">{{ loading ? "Signing in..." : "Login" }}</button>
-        </form>
-        <p v-if="loginError" class="form-error">{{ loginError }}</p>
-      </div>
-    </section>
+    <LoginView
+      v-if="!authenticated"
+      :app-name="appName"
+      :username="loginUsername"
+      :password="loginPassword"
+      :loading="loading"
+      :error="loginError"
+      @update:username="loginUsername = $event"
+      @update:password="loginPassword = $event"
+      @submit="submitLogin"
+    />
 
-    <section v-else class="browser-shell">
-      <aside class="sidebar">
-        <div class="sidebar-brand">
-          <div class="sidebar-brand-icon">FB</div>
-          <div>
-            <strong>Telegram Browser</strong>
-            <span>{{ user?.username }}</span>
-          </div>
-        </div>
+    <LayoutView
+      v-else
+      :app-name="appName"
+      :user="user"
+      :browse="browse"
+      :search="search"
+      :status-text="statusText"
+      :uploading-name="uploadingName"
+      :upload-percent="uploadPercent"
+      :visible-folders="visibleFolders"
+      :visible-files="visibleFiles"
+      :file-icon="fileIcon"
+      :display-time="displayTime"
+      :child-path="childPath"
+      :parent-path="parentPath"
+      @update:search="search = $event"
+      @root="loadBrowse('')"
+      @create-folder="createFolder"
+      @upload="triggerUpload"
+      @logout="logout"
+      @navigate="loadBrowse($event)"
+      @rename-folder="renameFolder"
+      @delete-folder="deleteFolder"
+      @stop-file="stopFile"
+      @retry-file="retryFile"
+      @delete-file="deleteFile"
+      @download-file="downloadFile"
+      @toggle-public-link="togglePublicLink"
+      @move-file="moveFile"
+    />
 
-        <nav class="sidebar-nav">
-          <button class="sidebar-link active" @click="loadBrowse(null)">
-            <span class="link-icon">[]</span>
-            <span>My files</span>
-          </button>
-          <button class="sidebar-link" @click="createFolder">
-            <span class="link-icon">+</span>
-            <span>New folder</span>
-          </button>
-          <button class="sidebar-link" @click="triggerUpload">
-            <span class="link-icon">^</span>
-            <span>New file</span>
-          </button>
-        </nav>
-
-        <div class="sidebar-footer">
-          <button class="sidebar-link" @click="logout">
-            <span class="link-icon">x</span>
-            <span>Logout</span>
-          </button>
-        </div>
-      </aside>
-
-      <main class="workspace">
-        <header class="topbar">
-          <div class="searchbox">
-            <span>o</span>
-            <input v-model="search" type="text" placeholder="Search..." />
-          </div>
-          <div class="topbar-actions">
-            <button class="topbar-button" @click="triggerUpload">Upload</button>
-            <button class="topbar-button" @click="createFolder">Folder</button>
-          </div>
-        </header>
-
-        <div class="content">
-          <div class="breadcrumbs">
-            <button
-              v-for="crumb in browse?.breadcrumbs || []"
-              :key="String(crumb.id)"
-              class="crumb"
-              @click="loadBrowse(crumb.id)"
-            >
-              {{ crumb.name }}
-            </button>
-          </div>
-
-          <div v-if="statusText" class="upload-banner">
-            <strong>{{ uploadingName }}</strong>
-            <span>{{ statusText }}</span>
-            <div class="progress">
-              <div class="progress-fill" :style="{ width: `${uploadPercent}%` }"></div>
-            </div>
-          </div>
-
-          <section class="section-block">
-            <div class="section-title">Folders</div>
-            <div class="card-grid">
-              <button
-                v-if="browse?.parent_folder_id !== null"
-                class="entry-card back-card"
-                @click="loadBrowse(browse?.parent_folder_id ?? null)"
-              >
-                <div class="entry-icon folder-icon"></div>
-                <div class="entry-text">
-                  <strong>..</strong>
-                  <span>Go back</span>
-                </div>
-              </button>
-
-              <article v-for="folder in visibleFolders" :key="folder.id" class="entry-card">
-                <button class="entry-main" @click="loadBrowse(folder.id)">
-                  <div class="entry-icon folder-icon"></div>
-                  <div class="entry-text">
-                    <strong>{{ folder.name }}</strong>
-                    <span>Folder</span>
-                  </div>
-                </button>
-                <div class="entry-tools">
-                  <button @click="renameFolder(folder)">Rename</button>
-                  <button class="danger" @click="deleteFolder(folder)">Delete</button>
-                </div>
-              </article>
-            </div>
-          </section>
-
-          <section class="section-block">
-            <div class="section-title">Files</div>
-            <div class="card-grid">
-              <article v-for="file in visibleFiles" :key="file.id" class="entry-card">
-                <div class="entry-main">
-                  <div class="entry-icon" :class="`${fileIcon(file)}-icon`"></div>
-                  <div class="entry-text">
-                    <strong :title="file.file_name">{{ file.file_name }}</strong>
-                    <span :class="{ danger: file.status === 'Error' }">{{ displayTime(file) }}</span>
-                  </div>
-                </div>
-                <div class="entry-tools">
-                  <button v-if="file.status === 'Processing'" @click="stopFile(file)">Stop</button>
-                  <template v-else-if="file.status === 'Error' || file.status === 'Stopped'">
-                    <button @click="retryFile(file)">Retry</button>
-                    <button class="danger" @click="deleteFile(file)">Delete</button>
-                  </template>
-                  <template v-else>
-                    <button @click="downloadFile(file)">Download</button>
-                    <button @click="togglePublicLink(file)">{{ file.public_token ? "Unshare" : "Share" }}</button>
-                    <button @click="moveFile(file)">Move</button>
-                    <button class="danger" @click="deleteFile(file)">Delete</button>
-                  </template>
-                </div>
-              </article>
-            </div>
-          </section>
-        </div>
-      </main>
-
-      <input id="file-input" class="hidden-input" type="file" multiple @change="handleFileInputChange" />
-    </section>
+    <input id="file-input" class="hidden-input" type="file" multiple @change="handleFileInputChange" />
   </div>
 </template>

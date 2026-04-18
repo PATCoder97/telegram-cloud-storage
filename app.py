@@ -36,6 +36,30 @@ def render_frontend_or_template(template_name):
         return send_from_directory(FRONTEND_DIST, 'index.html')
     return render_template(template_name)
 
+
+def frontend_bootstrap_config():
+    return {
+        'Name': 'Telegram Cloud Storage',
+        'BaseURL': '/',
+        'StaticURL': '',
+        'LoginPage': True,
+        'NoAuth': False,
+        'DisableExternal': True,
+        'DisableUsedPercentage': True,
+        'Theme': 'dark',
+        'Version': 'compat',
+        'Signup': False,
+        'ReCaptcha': '',
+        'ReCaptchaKey': '',
+        'AuthMethod': 'password',
+        'LogoutPage': '',
+        'EnableThumbs': False,
+        'ResizePreview': False,
+        'EnableExec': False,
+        'TusSettings': None,
+        'HideLoginButton': False,
+    }
+
 # All persistent data stored under /app/data (mapped to host via volume)
 DATA_DIR = os.environ.get('DATA_DIR', 'data')
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -62,6 +86,13 @@ def unauthorized_handler():
     if request.path.startswith('/api/'):
         return api_error('Unauthorized', 401)
     return redirect(url_for('login', next=request.path))
+
+
+@app.route('/api/frontend-config.js')
+def frontend_config_js():
+    config = json.dumps(frontend_bootstrap_config())
+    script = f"window.FileBrowser = {config};"
+    return Response(script, mimetype='application/javascript')
 
 
 class User(UserMixin):
@@ -216,11 +247,9 @@ def get_all_user_folders(user_id):
     return folders
 
 
-def get_breadcrumbs(folder_id):
-    breadcrumbs = [{'id': None, 'name': 'files'}]
+def folder_segments_from_id(folder_id):
     if not folder_id:
-        return breadcrumbs
-
+        return []
     conn = sqlite3.connect(DATABASE_FILE)
     cursor = conn.cursor()
     chain = []
@@ -233,7 +262,44 @@ def get_breadcrumbs(folder_id):
         chain.append({'id': row[0], 'name': row[1]})
         current_id = row[2]
     conn.close()
-    breadcrumbs.extend(reversed(chain))
+    return list(reversed(chain))
+
+
+def folder_path_from_id(folder_id):
+    segments = folder_segments_from_id(folder_id)
+    return '/'.join(segment['name'] for segment in segments)
+
+
+def resolve_folder_path(folder_path):
+    if not folder_path:
+        return None
+    clean_path = folder_path.strip('/')
+    if not clean_path:
+        return None
+
+    current_parent = None
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    for raw_segment in [segment for segment in clean_path.split('/') if segment]:
+        cursor.execute(
+            "SELECT id FROM folders WHERE name = ? AND parent_id IS ? AND owner_id = ?",
+            (raw_segment, current_parent, current_user.id),
+        )
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return None
+        current_parent = row[0]
+    conn.close()
+    return current_parent
+
+
+def get_breadcrumbs(folder_id):
+    breadcrumbs = [{'id': None, 'name': 'files'}]
+    if not folder_id:
+        return breadcrumbs
+
+    breadcrumbs.extend(folder_segments_from_id(folder_id))
     return breadcrumbs
 
 
@@ -242,6 +308,7 @@ def get_directory_payload(folder_id):
     return {
         'folder_id': folder_id,
         'current_folder_name': current_folder_name,
+        'current_path': folder_path_from_id(folder_id),
         'parent_folder_id': parent_folder_id,
         'breadcrumbs': get_breadcrumbs(folder_id),
         'folders': folders_info,
@@ -302,6 +369,20 @@ def logout():
     return redirect(url_for('login'))
 
 
+@app.route('/files')
+@app.route('/files/')
+@app.route('/files/<path:folder_path>')
+def files_frontend(folder_path=''):
+    if not current_user.is_authenticated:
+        return redirect(url_for('login', next=request.path))
+    if frontend_ready():
+        return send_from_directory(FRONTEND_DIST, 'index.html')
+    folder_id = resolve_folder_path(folder_path)
+    if folder_path and folder_id is None:
+        return "Folder not found", 404
+    return redirect(url_for('index', folder_id=folder_id) if folder_id else url_for('index'))
+
+
 @app.route('/api/session', methods=['GET'])
 def api_get_session():
     if not current_user.is_authenticated:
@@ -357,6 +438,16 @@ def api_logout():
 @app.route('/api/browse/<int:folder_id>', methods=['GET'])
 @login_required
 def api_browse(folder_id=None):
+    return api_success(get_directory_payload(folder_id))
+
+
+@app.route('/api/browse-path', methods=['GET'])
+@app.route('/api/browse-path/<path:folder_path>', methods=['GET'])
+@login_required
+def api_browse_path(folder_path=''):
+    folder_id = resolve_folder_path(folder_path)
+    if folder_path and folder_id is None:
+        return api_error('Không tìm thấy thư mục', 404)
     return api_success(get_directory_payload(folder_id))
 
 
