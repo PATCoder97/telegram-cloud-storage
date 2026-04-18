@@ -30,10 +30,11 @@ def log_message(message):
 
 FRONTEND_DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'frontend_dist')
 USER_PREFERENCES = {}
+USE_FILEBROWSER_FRONTEND = os.environ.get('USE_FILEBROWSER_FRONTEND', '').strip().lower() in ('1', 'true', 'yes', 'on')
 
 
 def frontend_ready():
-    return os.path.exists(os.path.join(FRONTEND_DIST, 'index.html'))
+    return USE_FILEBROWSER_FRONTEND and os.path.exists(os.path.join(FRONTEND_DIST, 'index.html'))
 
 
 def render_frontend_or_template(template_name):
@@ -52,7 +53,7 @@ def frontend_bootstrap_config():
         'DisableExternal': True,
         'DisableUsedPercentage': True,
         'Theme': 'dark',
-        'Version': 'v1.2.6',
+        'Version': 'v1.2.7',
         'Signup': False,
         'ReCaptcha': False,
         'ReCaptchaKey': '',
