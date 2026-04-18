@@ -52,7 +52,7 @@ def frontend_bootstrap_config():
         'DisableExternal': True,
         'DisableUsedPercentage': True,
         'Theme': 'dark',
-        'Version': 'v1.2.3',
+        'Version': 'v1.2.4',
         'Signup': False,
         'ReCaptcha': False,
         'ReCaptchaKey': '',
@@ -972,6 +972,7 @@ def api_browse_path(folder_path=''):
 @app.route('/api/resources', methods=['GET', 'POST'])
 @app.route('/api/resources/', methods=['GET', 'POST'])
 @app.route('/api/resources/<path:resource_path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH'])
+@app.route('/api/resources/<path:resource_path>/', methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH'])
 def filebrowser_resources(resource_path=''):
     user_row, error = require_api_auth()
     if error:
