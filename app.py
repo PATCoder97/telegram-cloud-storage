@@ -52,7 +52,7 @@ def frontend_bootstrap_config():
         'DisableExternal': True,
         'DisableUsedPercentage': True,
         'Theme': 'dark',
-        'Version': 'v1.2.5',
+        'Version': 'v1.2.6',
         'Signup': False,
         'ReCaptcha': False,
         'ReCaptchaKey': '',
@@ -709,6 +709,15 @@ class UploadedBlob:
         shutil.move(self.source_path, destination)
 
 
+class UploadedFileAdapter:
+    def __init__(self, file_storage, filename):
+        self.file_storage = file_storage
+        self.filename = filename
+
+    def save(self, destination):
+        self.file_storage.save(destination)
+
+
 def write_temp_blob(filename, content):
     os.makedirs(TEMP_UPLOAD, exist_ok=True)
     temp_input = os.path.join(TEMP_UPLOAD, f"raw_{uuid.uuid4().hex}_{filename}")
@@ -1196,6 +1205,63 @@ def filebrowser_usage(resource_path=''):
     conn.close()
     total = max(used, 1)
     return fb_json({'used': used, 'total': total})
+
+
+@app.route('/api/resources/folder-path', methods=['POST'])
+def filebrowser_create_folder_by_path():
+    user_row, error = require_api_auth()
+    if error:
+        return error
+
+    payload = request.get_json(silent=True) or request.form
+    target_path = (payload.get('path') or '').strip()
+    if not target_path:
+        return fb_error('Path required', 400)
+
+    normalized = normalize_virtual_path(target_path)
+    if not normalized.endswith('/'):
+        normalized += '/'
+
+    folder_id, ensure_error = ensure_folder_path_for_user(normalized, user_row[0])
+    if ensure_error:
+        return fb_error(ensure_error, 409)
+
+    return Response(str(folder_id or ''), status=200, mimetype='text/plain; charset=utf-8')
+
+
+@app.route('/api/resources/file-path', methods=['POST'])
+def filebrowser_upload_file_by_path():
+    user_row, error = require_api_auth()
+    if error:
+        return error
+
+    if 'file' not in request.files:
+        return fb_error('File required', 400)
+
+    target_path = (request.form.get('path') or '').strip()
+    if not target_path:
+        return fb_error('Path required', 400)
+
+    normalized = normalize_virtual_path(target_path)
+    if normalized.endswith('/'):
+        return fb_error('Invalid file path', 400)
+
+    overwrite = (request.form.get('override') or 'false').lower() == 'true'
+    parent_path, file_name = split_virtual_path(normalized)
+    folder_id, ensure_error = ensure_folder_path_for_user(parent_path, user_row[0])
+    if ensure_error:
+        return fb_error(ensure_error, 409)
+
+    existing_file = find_file_by_virtual_path(normalized, user_row[0])
+    if existing_file and not overwrite:
+        return fb_error('Conflict', 409)
+    if existing_file:
+        delete_file_record(existing_file[0], user_row[0])
+
+    upload_file = request.files['file']
+    adapted_file = UploadedFileAdapter(upload_file, file_name)
+    file_id, _job_id = queue_upload_for_user(adapted_file, folder_id, user_row[0])
+    return Response(str(file_id), status=200, mimetype='text/plain; charset=utf-8')
 
 
 @app.route('/api/users', methods=['GET'])

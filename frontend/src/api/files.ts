@@ -103,18 +103,19 @@ export async function post(
   overwrite = false,
   onupload: any = () => {}
 ) {
-  // Use the pre-existing API if:
-  const useResourcesApi =
-    // a folder is being created
-    url.endsWith("/") ||
-    // We're not using http(s)
-    (content instanceof Blob &&
-      !["http:", "https:"].includes(window.location.protocol)) ||
-    // Tus is disabled / not applicable
-    !(await useTus(content));
-  return useResourcesApi
-    ? postResources(url, content, overwrite, onupload)
-    : postTus(url, content, overwrite, onupload);
+  if (url.endsWith("/")) {
+    return postDirectoryPath(url);
+  }
+
+  if (content instanceof Blob) {
+    if (await useTus(content)) {
+      return postTus(url, content, overwrite, onupload);
+    }
+
+    return postFilePath(url, content, overwrite, onupload);
+  }
+
+  return postResources(url, content, overwrite, onupload);
 }
 
 async function postResources(
@@ -162,6 +163,64 @@ async function postResources(
     };
 
     request.send(bufferContent || content);
+  });
+}
+
+async function postDirectoryPath(url: string) {
+  url = removePrefix(url);
+
+  const res = await fetchURL("/api/resources/folder-path", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      path: url,
+    }),
+  });
+
+  return res.text();
+}
+
+async function postFilePath(
+  url: string,
+  content: Blob,
+  overwrite = false,
+  onupload: any
+) {
+  url = removePrefix(url);
+
+  const formData = new FormData();
+  const fallbackName = decodeURIComponent(url.split("/").pop() || "upload.bin");
+  formData.append("path", url);
+  formData.append("override", String(overwrite));
+  formData.append("file", content, content instanceof File ? content.name : fallbackName);
+
+  const authStore = useAuthStore();
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", joinBaseURL("/api/resources/file-path"), true);
+    request.setRequestHeader("X-Auth", authStore.jwt);
+
+    if (typeof onupload === "function") {
+      request.upload.onprogress = onupload;
+    }
+
+    request.onload = () => {
+      if (request.status === 200) {
+        resolve(request.responseText);
+      } else if (request.status === 409) {
+        reject(new Error(request.status.toString()));
+      } else {
+        reject(new Error(request.responseText));
+      }
+    };
+
+    request.onerror = () => {
+      reject(new Error("001 Connection aborted"));
+    };
+
+    request.send(formData);
   });
 }
 
