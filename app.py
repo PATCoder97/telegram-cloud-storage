@@ -52,7 +52,7 @@ def frontend_bootstrap_config():
         'DisableExternal': True,
         'DisableUsedPercentage': True,
         'Theme': 'dark',
-        'Version': 'v1.2.1',
+        'Version': 'v1.2.2',
         'Signup': False,
         'ReCaptcha': False,
         'ReCaptchaKey': '',
@@ -63,7 +63,7 @@ def frontend_bootstrap_config():
         'EnableExec': False,
         'CSS': False,
         'Color': '',
-        'TusSettings': {'chunkSize': 10485760, 'retryCount': 5},
+        'TusSettings': None,
         'HideLoginButton': False,
     }
 
@@ -393,8 +393,6 @@ def split_virtual_path(resource_path=''):
         return '', ''
     stripped = normalized.strip('/')
     parts = stripped.split('/')
-    if normalized.endswith('/'):
-        return '/'.join(parts), ''
     if len(parts) == 1:
         return '', parts[0]
     return '/'.join(parts[:-1]), parts[-1]

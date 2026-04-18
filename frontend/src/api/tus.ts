@@ -102,7 +102,7 @@ function computeRetryDelays(tusSettings: TusSettings): number[] | undefined {
 }
 
 export async function useTus(content: ApiContent) {
-  return isTusSupported() && content instanceof Blob;
+  return Boolean(tusSettings) && isTusSupported() && content instanceof Blob;
 }
 
 function isTusSupported() {
