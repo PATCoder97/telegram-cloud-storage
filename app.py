@@ -52,7 +52,7 @@ def frontend_bootstrap_config():
         'DisableExternal': True,
         'DisableUsedPercentage': True,
         'Theme': 'dark',
-        'Version': 'v1.2.2',
+        'Version': 'v1.2.3',
         'Signup': False,
         'ReCaptcha': False,
         'ReCaptchaKey': '',
